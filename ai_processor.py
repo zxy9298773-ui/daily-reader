@@ -130,7 +130,10 @@ def _translate_paragraphs(paragraphs: List[str]) -> List[Dict[str, str]]:
                 else:
                     parsed[idx]["translation"] = text
 
-        if len(parsed) >= len(paragraphs):
+        # Each paragraph must have BOTH an original AND a translation
+        if len(parsed) >= len(paragraphs) and all(
+            len(v) >= 2 for v in parsed.values()
+        ):
             break
 
         logger.warning(
@@ -160,9 +163,9 @@ def _translate_paragraphs(paragraphs: List[str]) -> List[Dict[str, str]]:
 # ---------------------------------------------------------------------------
 
 def _extract_vocabulary(text: str) -> List[Dict[str, str]]:
-    """Extract 18 vocabulary items from *text* using pipe-delimited format."""
+    """Extract vocabulary items from *text* (requests 22, returns up to 20)."""
     prompt = (
-        f"从下面文章中提取 18 个最有价值的单词。"
+        f"从下面文章中提取 22 个最有价值的单词。"
         f"对每个单词，按以下格式输出，每行一个词，用 | 分隔：\n\n"
         f"单词 | 音标 | 词性(英文) | 中文释义 | 固定搭配(英文短语) | 固定搭配中文释义 | 原文例句(英文) | 例句中文翻译\n\n"
         f"要求：\n"
@@ -170,7 +173,7 @@ def _extract_vocabulary(text: str) -> List[Dict[str, str]]:
         f"2. 例句必须是完整的一句话（不是短语），长度适中（10-25个单词），不宜过长\n"
         f"3. 例句必须是原文中的原句，不要自己编造\n"
         f"4. 例句同时提供英文原文和中文翻译\n\n"
-        f"文章：\n{text[:4000]}"
+        f"文章：\n{text[:6000]}"
     )
     system = (
         "你是一个英语词汇老师。严格按照格式输出，每行一个单词，用 | 分隔字段。"
