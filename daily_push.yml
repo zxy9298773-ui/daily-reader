@@ -17,10 +17,9 @@ jobs:
       - name: Run script
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-          EMAIL_ADDRESS: ${{ secrets.EMAIL_ADDRESS }}
-          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+          FROM_EMAIL: ${{ secrets.EMAIL_ADDRESS }}
+          TO_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
           SMTP_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
           SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
-          RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
         run: python main.py --send
