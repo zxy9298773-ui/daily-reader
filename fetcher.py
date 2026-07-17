@@ -85,7 +85,7 @@ def _clean_text(raw: str) -> str:
 #  Truncation detection — reject preview / paywalled articles
 # ---------------------------------------------------------------------------
 
-def _is_truncated(cleaned: str, raw: str = "") -> bool:
+def _is_truncated(cleaned: str) -> bool:
     """Return True if the article appears to be a preview (cut off mid-way)."""
     paragraphs = [p.strip() for p in cleaned.split("\n\n") if p.strip()]
 
@@ -101,33 +101,23 @@ def _is_truncated(cleaned: str, raw: str = "") -> bool:
         return True
 
     # ── mid-article truncation signal cross-check ──────────────────
-    # If the RAW text contains subscription/paywall signals anywhere,
-    # and the cleaned text is still short (< 2000 chars), the article
-    # is likely a preview that happened to stumble past the length check
-    # after the junk lines were removed.
+    # Only check the CLEANED text.  If _clean_text already removed the
+    # "subscribe" / "continue reading" junk lines, the signal won't be
+    # present — and the article is fine.  A signal that *survives*
+    # cleaning is genuinely in the article body.
     mid_article_signals = [
-        r"continue\s+reading",
-        r"read\s+the\s+(full\s+)?(article|story)",
-        r"subscribe\s+(now|to|for)",
-        r"sign\s+(up|in)\s+to\s+read",
-        r"this\s+is\s+a\s+(preview|limited)",
         r"to\s+continue\s+reading",
         r"become\s+a\s+(member|subscriber|supporter)",
-        r"already\s+a\s+(member|subscriber)",
         r"read\s+without\s+(limits|paywall)",
         r"unlock\s+(this\s+)?article",
     ]
-    if raw:
-        for pat in mid_article_signals:
-            if re.search(pat, raw, re.IGNORECASE):
-                if len(cleaned) < 2000:
-                    logger.debug(
-                        "Article truncated: raw text contains '%s' "
-                        "but cleaned text is only %d chars",
-                        pat, len(cleaned),
-                    )
-                    return True
-                break  # found a signal but text is long enough → OK
+    for pat in mid_article_signals:
+        if re.search(pat, cleaned, re.IGNORECASE):
+            logger.debug(
+                "Article truncated: cleaned text contains '%s'",
+                pat,
+            )
+            return True
 
     # The last paragraph should end with sentence-ending punctuation
     last_para = paragraphs[-1].strip()
@@ -160,7 +150,7 @@ def extract_text(url: str) -> Optional[str]:
                       'Chrome/120.0.0.0 Safari/537.36',
     }
 
-    raw_text = None
+    best_raw: str | None = None
 
     # ── Strategy 1: newspaper3k ────────────────────────────────────
     try:
@@ -170,55 +160,55 @@ def extract_text(url: str) -> Optional[str]:
         article.parse()
         if len(article.text) > 200:
             cleaned = _clean_text(article.text)
-            if cleaned and len(cleaned) >= 800 and not _is_truncated(cleaned, raw=article.text):
+            if cleaned and len(cleaned) >= 800 and not _is_truncated(cleaned):
                 return cleaned
-            raw_text = article.text  # keep for fallback
+            if not best_raw or len(article.text) > len(best_raw):
+                best_raw = article.text
     except Exception:
         pass
 
     # ── Strategy 2: readability-lxml ───────────────────────────────
-    if not raw_text:
-        try:
-            from readability import Document
-            import requests
-            resp = requests.get(url, headers=headers, timeout=10)
-            doc = Document(resp.text)
-            text = doc.summary()
-            from bs4 import BeautifulSoup
-            soup = BeautifulSoup(text, 'html.parser')
-            text = soup.get_text(separator='\n')
-            if len(text) > 200:
-                cleaned = _clean_text(text)
-                if cleaned and len(cleaned) >= 800 and not _is_truncated(cleaned, raw=text):
-                    return cleaned
-                raw_text = text
-        except Exception:
-            pass
+    try:
+        from readability import Document
+        import requests
+        resp = requests.get(url, headers=headers, timeout=10)
+        doc = Document(resp.text)
+        text = doc.summary()
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(text, 'html.parser')
+        text = soup.get_text(separator='\n')
+        if len(text) > 200:
+            cleaned = _clean_text(text)
+            if cleaned and len(cleaned) >= 800 and not _is_truncated(cleaned):
+                return cleaned
+            if not best_raw or len(text) > len(best_raw):
+                best_raw = text
+    except Exception:
+        pass
 
     # ── Strategy 3: direct requests + BeautifulSoup ────────────────
-    if not raw_text:
-        try:
-            import requests
-            resp = requests.get(url, headers=headers, timeout=10)
-            from bs4 import BeautifulSoup
-            soup = BeautifulSoup(resp.text, 'html.parser')
-            for tag in ['article', 'main', '.post-content', '.article-body', '.story-body']:
-                el = soup.select_one(tag)
-                if el:
-                    text = el.get_text(separator='\n')
-                    if len(text) > 200:
-                        cleaned = _clean_text(text)
-                        if cleaned and len(cleaned) >= 800 and not _is_truncated(cleaned, raw=text):
-                            return cleaned
-                        raw_text = text
-        except Exception:
-            pass
+    try:
+        import requests
+        resp = requests.get(url, headers=headers, timeout=10)
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(resp.text, 'html.parser')
+        for tag in ['article', 'main', '.post-content', '.article-body', '.story-body']:
+            el = soup.select_one(tag)
+            if el:
+                text = el.get_text(separator='\n')
+                if len(text) > 200:
+                    cleaned = _clean_text(text)
+                    if cleaned and len(cleaned) >= 800 and not _is_truncated(cleaned):
+                        return cleaned
+                    if not best_raw or len(text) > len(best_raw):
+                        best_raw = text
+    except Exception:
+        pass
 
-    # Last resort: if nothing passed truncation check but we have raw text,
-    # try the raw text through cleaning once more.
-    if raw_text:
-        cleaned = _clean_text(raw_text)
-        if cleaned and len(cleaned) >= 800 and not _is_truncated(cleaned, raw=raw_text):
+    # Last resort: try the longest raw text through cleaning once more
+    if best_raw:
+        cleaned = _clean_text(best_raw)
+        if cleaned and len(cleaned) >= 800 and not _is_truncated(cleaned):
             return cleaned
 
     return None
@@ -298,6 +288,7 @@ def fetch_articles(skip_urls: set[str] | None = None) -> List[Dict]:
     skip_urls = skip_urls or set()
     articles: List[Dict] = []
     used_urls: set[str] = set()   # tracks URLs taken in pass 1 / skip
+    failed_urls: set[str] = set()  # tracks URLs that failed extraction
 
     # Parse all feeds up front so we only fetch each RSS URL once
     feed_buckets: list[dict] = []  # {"name": str, "url": str, "entries": [...]}
@@ -345,6 +336,8 @@ def fetch_articles(skip_urls: set[str] | None = None) -> List[Dict]:
                     article["title"],
                 )
                 break  # max 1 per feed in pass 1
+            else:
+                failed_urls.add(url)  # don't retry in pass 2
 
         if not taken_one:
             logger.debug("  No valid article from %s (pass 1)", bucket["name"])
@@ -366,7 +359,7 @@ def fetch_articles(skip_urls: set[str] | None = None) -> List[Dict]:
                     break
 
                 url = entry.get("link", "")
-                if not url or url in skip_urls or url in used_urls:
+                if not url or url in skip_urls or url in used_urls or url in failed_urls:
                     continue
 
                 article = _extract_article(entry, bucket["name"])
