@@ -174,6 +174,56 @@ def _is_truncated(cleaned: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+#  Roundup / newsletter detection — reject multi-topic articles
+# ---------------------------------------------------------------------------
+
+def _is_roundup_article(title: str, cleaned_text: str) -> bool:
+    """Return True if the article is a multi-topic roundup / newsletter.
+
+    Roundups piece together several unrelated stories and should be
+    skipped — they violate the "one article, one topic" rule.
+    """
+    title_lower = title.lower()
+
+    # ── Title signals ──────────────────────────────────────────────
+    roundup_title_keywords = [
+        "the download", "daily briefing", "daily roundup", "the newsletter",
+        "daily digest", "this week in", "weekly wrap", "morning briefing",
+        "today's top", "your daily", "in case you missed",
+        "5 things", "5 stories", "top stories", "editors' picks",
+        "highlights from", "what to watch", "best of",
+    ]
+    for kw in roundup_title_keywords:
+        if kw in title_lower:
+            logger.debug("Roundup detected by title keyword '%s': %s", kw, title[:60])
+            return True
+
+    # Colon + "and" pattern: "The Download: X and Y" signals 2+ topics
+    if re.search(r":\s*\w+\s+and\s+\w+", title):
+        logger.debug("Roundup suspected by 'and' pattern in title: %s", title[:60])
+        return True
+
+    # ── Text signals ───────────────────────────────────────────────
+    # Multiple "+ " list markers (e.g. "+ Soccer... + A cosmic... + Sir David...")
+    plus_markers = re.findall(r"(?:^|\s)\+ [A-Z]", cleaned_text)
+    if len(plus_markers) >= 3:
+        logger.debug(
+            "Roundup detected: %d '+ ' list markers in text", len(plus_markers)
+        )
+        return True
+
+    # Multiple "•" bullet markers
+    bullet_count = cleaned_text.count("•")
+    if bullet_count >= 3:
+        logger.debug(
+            "Roundup detected: %d bullet markers in text", bullet_count
+        )
+        return True
+
+    return False
+
+
+# ---------------------------------------------------------------------------
 #  Multi-strategy text extraction
 # ---------------------------------------------------------------------------
 
@@ -290,6 +340,12 @@ def _extract_article(entry, source_name: str) -> Optional[Dict]:
         text = summary
         is_summary = True
         logger.info("  Using RSS summary (%d chars) as fallback for: %s", len(summary), url[:60])
+
+    # Roundup / newsletter check — reject multi-topic articles
+    title = entry.get("title", "")
+    if _is_roundup_article(title, text):
+        logger.debug("Rejected roundup article: %s", title[:60])
+        return None
 
     return {
         "title": entry.get("title", ""),
