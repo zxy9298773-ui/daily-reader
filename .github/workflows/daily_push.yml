@@ -28,7 +28,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libxml2-dev libxslt1-dev
 
       - name: Install Python dependencies
-        run: pip install -r daily_reader/requirements.txt
+       run: pip install -r requirements.txt
 
       - name: Download NLTK data
         run: python -c "import nltk; nltk.download('punkt_tab', quiet=True)"
