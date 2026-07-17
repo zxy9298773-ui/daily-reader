@@ -1,45 +1,25 @@
-name: Daily Reader Push
-
+name: Daily Push
 on:
   schedule:
-    # 07:00 Beijing Time (UTC 23:00 previous day)
-    - cron: '0 23 * * *'
-  workflow_dispatch:  # manual trigger for testing
-
+    - cron: '0 0 * * *'
+  workflow_dispatch:
 jobs:
-  send-email:
+  push:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up Python 3.11
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
-
-      # ── Persist SQLite history so we never repeat articles ──────
-      - name: Cache article history (SQLite)
-        uses: actions/cache@v4
-        with:
-          path: daily_reader.db
-          key: daily-reader-history-v1
-
-      - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libxml2-dev libxslt1-dev
-
-      - name: Install Python dependencies
-        run: pip install -r daily_reader/requirements.txt
-
-      # newspaper3k needs NLTK punkt data on first run
-      - name: Download NLTK data
-        run: python -c "import nltk; nltk.download('punkt_tab', quiet=True)"
-
-      - name: Fetch, translate, build & send email
+          python-version: '3.10'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run script
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
-          FROM_EMAIL: ${{ secrets.FROM_EMAIL }}
-          TO_EMAIL: ${{ secrets.TO_EMAIL }}
-        run: cd daily_reader && python main.py --send
+          EMAIL_ADDRESS: ${{ secrets.EMAIL_ADDRESS }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+          SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
+        run: python main.py
