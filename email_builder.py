@@ -119,6 +119,40 @@ def _article_section(article: Dict) -> str:
     paragraphs = article.get("paragraphs", [])
     vocabulary = article.get("vocabulary", [])
     is_summary = article.get("is_summary", False)
+    is_link_list = article.get("is_link_list", False)
+
+    if is_link_list:
+        # ── Link-list: show clickable titles from all feeds ──
+        links = article.get("link_entries", [])
+        links_html = "".join(
+            f'<tr><td style="padding:6px 0;font-size:14px;line-height:1.5;">'
+            f'<a href="{_esc(link["url"])}" '
+            f'style="color:{ACCENT_GREEN};text-decoration:none;font-family:{FONT_EN};">'
+            f'{_esc(link["title"])}</a></td></tr>'
+            for link in links
+        )
+        source_note = (
+            f"<p style=\"margin:6px 0 0;font-size:12px;color:{TEXT_META};\">"
+            f"No full-text articles available today. "
+            f"Click any link below to read the original story.</p>"
+        )
+        return f"""
+    <!-- ── article: link list ── -->
+    <tr><td style="padding:32px 40px 4px;">
+      <h2 style="margin:0;font-size:20px;font-weight:700;color:{TEXT_PRIMARY};line-height:1.3;font-family:Georgia,'Times New Roman',Times,serif;">
+        {_esc(title)}</h2>
+      {source_note}
+    </td></tr>
+    <tr><td style="padding:12px 40px 32px;">
+      <table width="100%" cellpadding="0" cellspacing="0">
+        {links_html}
+      </table>
+    </td></tr>
+    <tr><td style="padding:0 40px;">
+      <table width="100%" cellpadding="0" cellspacing="0"><tr>
+        <td style="height:1px;background:{BORDER_LIGHT};font-size:0;line-height:0;">&nbsp;</td>
+      </tr></table>
+    </td></tr>"""
 
     if is_summary:
         # ── Summary-only: full-width layout + "Read full article" button ──

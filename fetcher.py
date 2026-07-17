@@ -410,4 +410,33 @@ def fetch_articles(skip_urls: set[str] | None = None) -> List[Dict]:
     if not articles:
         logger.warning("No articles could be extracted from any feed")
 
+        # ── Link-list fallback ────────────────────────────────────
+        links: list[dict] = []
+        for bucket in feed_buckets:
+            for entry in bucket["entries"]:
+                url = entry.get("link", "")
+                title = entry.get("title", "")
+                if url and title and url not in skip_urls:
+                    links.append({"title": title, "url": url})
+
+        if links:
+            logger.info(
+                "Fallback: building link list with %d entries",
+                len(links),
+            )
+            return [{
+                "title": f"{len(links)} Stories from {len(feed_buckets)} Sources",
+                "url": "",
+                "author": [],
+                "published": "",
+                "text": "",
+                "source": "",
+                "summary": "",
+                "top_image": "",
+                "is_link_list": True,
+                "link_entries": links[:15],
+                "paragraphs": [],
+                "vocabulary": [],
+            }]
+
     return articles

@@ -80,7 +80,11 @@ def main():
     logger.info("  Step 3/4 — Building HTML email")
     logger.info("=" * 48)
 
-    subject = f"Daily Reader — {processed[0]['source']} & more"
+    first = processed[0]
+    if first.get("is_link_list"):
+        subject = "Daily Reader — Link List"
+    else:
+        subject = f"Daily Reader — {first['source']} & more"
     html = build_email(processed)
 
     # ── 4. Send (or print) ────────────────────────────────────────
