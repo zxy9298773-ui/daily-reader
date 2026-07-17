@@ -124,6 +124,17 @@ def _is_truncated(cleaned: str) -> bool:
             )
             return True
 
+    # Average paragraph length check — reject topic-listing pages
+    # A real article has paragraphs averaging ≥120 chars; a listing
+    # of topic headlines / snippets averages well below that.
+    avg_para_len = sum(len(p) for p in paragraphs) / len(paragraphs)
+    if avg_para_len < 120:
+        logger.debug(
+            "Article rejected: avg paragraph length only %.0f chars (likely a listing page)",
+            avg_para_len,
+        )
+        return True
+
     # ── mid-article truncation signal cross-check ──────────────────
     # Only check the CLEANED text.  If _clean_text already removed the
     # "subscribe" / "continue reading" junk lines, the signal won't be
