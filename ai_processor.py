@@ -26,7 +26,8 @@ DEFAULT_KWARGS = dict(
     max_tokens=16384,
 )
 
-_MAX_RETRIES = 1
+_MAX_RETRIES = 1          # for translation
+_MAX_VOCAB_RETRIES = 3   # for vocabulary (stricter dedup)
 _RETRY_DELAY_S = 1.0
 
 
@@ -171,8 +172,9 @@ def _extract_vocabulary(text: str) -> List[Dict[str, str]]:
         f"严格规则：\n"
         f"1. 固定搭配必须同时提供英文短语和中文释义\n"
         f"2. 英文例句必须是原文中的完整句子（不是短语），长度适中（10-25个单词）\n"
-        f"3. 中文例句必须是与英文例句不同内容的独立句子，禁止中英互译同一句话\n"
-        f"4. 不同单词必须使用不同的例句场景，禁止两个单词共用同一个句型模板\n"
+        f"3. 中文例句必须与英文例句是完全不同内容的独立句子，禁止中英互译同一句话\n"
+        f"4. 【最重要】禁止两个单词共用同一个原文句子。每个单词的英文例句必须来自原文中不同位置的独立句子。\n"
+        f"   即使同一个原文句子包含多个目标单词，也禁止为不同单词重复使用该句子。\n"
         f"5. 连续 10 个单词至少覆盖 5 种不同的主题场景\n"
         f"6. 所有句子必须完整、包含具体信息、不要太长\n\n"
         f"文章：\n{text[:6000]}"
@@ -180,12 +182,13 @@ def _extract_vocabulary(text: str) -> List[Dict[str, str]]:
     system = (
         "你是一个英语词汇老师。严格按照格式输出，每行一个单词，用 | 分隔字段。"
         "每行必须有8列。英文例句必须是原文完整句子（10-25词）。"
-        "中文例句必须与英文例句是不同的独立句子，不是翻译关系。"
-        "每个单词的例句场景必须独一无二，禁止重复句型。"
+        "中文例句必须与英文例句是完全不同内容的独立句子，不是翻译关系。"
+        "绝对禁止两个单词共用同一个英文例句。每个单词必须使用原文中不同位置的独立句子作为英文例句。"
+        "如果你在同一个原文句子上选了多个单词，那每个单词必须搭配来自文章其他位置的独立例句，不能复用。"
         "不要多余的文字。"
     )
 
-    for attempt in range(1 + _MAX_RETRIES):
+    for attempt in range(1 + _MAX_VOCAB_RETRIES):
         raw = _chat(prompt, system)
         lines = [line.strip() for line in raw.strip().split("\n") if line.strip()]
 
@@ -225,17 +228,52 @@ def _extract_vocabulary(text: str) -> List[Dict[str, str]]:
                 })
 
         if vocab:
+            # Dedup check: reject if any two vocab items share the same English example
+            seen_examples: set[str] = set()
+            has_dup = False
+            for v in vocab:
+                ex = v.get("example_en", "")
+                if ex in seen_examples:
+                    has_dup = True
+                    break
+                seen_examples.add(ex)
+
+            if has_dup:
+                logger.warning(
+                    "Vocab has duplicate English examples (attempt %d/%d), retrying…",
+                    attempt + 1,
+                    1 + _MAX_VOCAB_RETRIES,
+                )
+                if attempt < _MAX_VOCAB_RETRIES:
+                    time.sleep(_RETRY_DELAY_S)
+                    continue
+                # Retries exhausted → deduplicate by keeping only the first
+                # occurrence of each unique English example
+                seen: set[str] = set()
+                deduped = []
+                for v in vocab:
+                    ex = v.get("example_en", "")
+                    if ex not in seen:
+                        seen.add(ex)
+                        deduped.append(v)
+                logger.warning(
+                    "Vocab dedup fallback: reduced %d → %d items",
+                    len(vocab),
+                    len(deduped),
+                )
+                return deduped[:20]
+
             return vocab[:20]
 
         logger.warning(
             "Vocabulary parsing produced 0 items (attempt %d/%d), retrying…",
             attempt + 1,
-            1 + _MAX_RETRIES,
+            1 + _MAX_VOCAB_RETRIES,
         )
-        if attempt < _MAX_RETRIES:
+        if attempt < _MAX_VOCAB_RETRIES:
             time.sleep(_RETRY_DELAY_S)
 
-    logger.error("Vocabulary extraction failed after %d attempts", 1 + _MAX_RETRIES)
+    logger.error("Vocabulary extraction failed after %d attempts", 1 + _MAX_VOCAB_RETRIES)
     return []
 
 
