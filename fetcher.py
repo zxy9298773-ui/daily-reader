@@ -24,7 +24,7 @@ _JUNK_PATTERNS = [
     r"follow\s+us",
     r"advertisement|ad\s|sponsored?",
     r"sponsor\s+(message|content|story)",
-    r"read\s+more|related\s+(stories|articles|content)",
+    r"read\s+more|related\s+(stories|articles|content|topics|reading|links|coverage)",
     r"©|copyright|all\s+rights\s+reserved",
     r"terms\s+of\s+service|privacy\s+policy",
     r"this\s+article\s+was\s+originally\s+published",
@@ -35,6 +35,18 @@ _JUNK_PATTERNS = [
     r"already\s+(a\s+)?(member|subscriber)",
     r"click\s+here",
     r"editor'?s?\s*(note|pick)",
+    r"share\s+this|share\s+on",
+    r"more\s+on\s+",
+    r"related\s+(topics|reading|links|coverage)",
+    r"photograph(y|ed|er)?\s+by|image\s+(credit|by|via)",
+    r"you\s+might\s+also|in\s+this\s+article",
+    r"top\s+stories|must\s+read|trending",
+    r"most\s+(popular|read|viewed|shared)",
+    r"comments?\s+(are\s+)?(closed|disabled)",
+    r"external\s+(link|site|links)",
+    r"load\s+more|show\s+more",
+    r"the\s+latest|latest\s+(news|updates|stories)",
+    r"updates?\s+and\s+(analysis|coverage)",
 ]
 
 
@@ -75,7 +87,7 @@ def _clean_text(raw: str) -> str:
         paragraph = " ".join(good_lines)
         # Remove extra whitespace
         paragraph = re.sub(r"\s+", " ", paragraph).strip()
-        if len(paragraph) >= 30:  # skip very short fragments
+        if len(paragraph) >= 60:  # skip short fragments (real paragraphs are 100+)
             clean_paragraphs.append(paragraph)
 
     return "\n\n".join(clean_paragraphs)
@@ -99,6 +111,18 @@ def _is_truncated(cleaned: str) -> bool:
     if len(cleaned) < 800:
         logger.debug("Article truncated: only %d chars after cleaning", len(cleaned))
         return True
+
+    # At least 50 % of paragraphs should be substantial (≥100 chars)
+    if paragraphs:
+        substantial_ratio = len(long_paragraphs) / len(paragraphs)
+        if substantial_ratio < 0.5:
+            logger.debug(
+                "Article truncated: only %.0f%% of paragraphs are substantial (%d/%d)",
+                substantial_ratio * 100,
+                len(long_paragraphs),
+                len(paragraphs),
+            )
+            return True
 
     # ── mid-article truncation signal cross-check ──────────────────
     # Only check the CLEANED text.  If _clean_text already removed the
