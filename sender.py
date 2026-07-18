@@ -10,19 +10,11 @@ import config
 
 logger = logging.getLogger(__name__)
 
-# 从环境变量读取 Resend API Key（在 Railway 里设置）
 RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
-# 免费版只能用这个发件人，除非你在 Resend 验证了自定义域名
 FROM_EMAIL = "外刊推送 <onboarding@resend.dev>"
 
 
 def send_email(subject: str, html_content: str) -> bool:
-    """Send *html_content* to the configured recipient via Resend API.
-
-    Returns ``True`` on success, ``False`` on any failure (the fallback
-    printer is always called on failure).
-    """
-    # ── 检查必要配置 ──────────────────────────────────────────────
     if not RESEND_API_KEY:
         logger.warning("RESEND_API_KEY not set – printing to console")
         _print_to_console(subject, html_content)
@@ -33,7 +25,6 @@ def send_email(subject: str, html_content: str) -> bool:
         _print_to_console(subject, html_content)
         return False
 
-    # ── 调用 Resend HTTP API ──────────────────────────────────────
     payload = {
         "from": FROM_EMAIL,
         "to": [config.TO_EMAIL],
@@ -51,19 +42,13 @@ def send_email(subject: str, html_content: str) -> bool:
             "https://api.resend.com/emails",
             json=payload,
             headers=headers,
-            timeout=30,  # 超时 30 秒，不会一直卡着
+            timeout=30,
         )
-
         if resp.ok:
             logger.info("Email sent successfully via Resend API (id=%s)", resp.json().get("id"))
             return True
         else:
-            logger.error(
-                "Resend API error: %s %s – %s",
-                resp.status_code,
-                resp.reason,
-                resp.text,
-            )
+            logger.error("Resend API error: %s %s – %s", resp.status_code, resp.reason, resp.text)
     except requests.exceptions.Timeout:
         logger.error("Resend API timed out after 30s")
     except requests.exceptions.ConnectionError as e:
@@ -71,13 +56,11 @@ def send_email(subject: str, html_content: str) -> bool:
     except Exception:
         logger.exception("Resend API send failed")
 
-    # ── fallback ───────────────────────────────────────────────────
     _print_to_console(subject, html_content)
     return False
 
 
 def _print_to_console(subject: str, html_content: str):
-    """Print a summary of the email to stdout (debug/dev fallback)."""
     line = "═" * 60
     print(f"\n{line}")
     print(f"  SUBJECT: {subject}")
