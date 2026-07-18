@@ -11,7 +11,7 @@ load_dotenv()
 # ---------------------------------------------------------------------------
 # DeepSeek API (OpenAI-compatible)
 # ---------------------------------------------------------------------------
-DEEPSEEK_API_KEY: str = os.getenv("DEEPSEEK_API_KEY", "")
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 DEEPSEEK_BASE_URL: str = "https://api.deepseek.com"
 DEEPSEEK_MODEL: str = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
 
