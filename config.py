@@ -45,7 +45,7 @@ IMAP_PORT: int = 993
 # ── cleanup ─────────────────────────────────────────────────────────
 CLEANUP_AFTER_DAYS: int = 3        # auto-delete emails older than this
 CLEANUP_SEARCH_SUBJECT: str = "Daily Reader"   # only delete matching emails
-
+print(f"[DEBUG] DEEPSEEK_API_KEY length={len(DEEPSEEK_API_KEY)}, prefix={DEEPSEEK_API_KEY[:15] if DEEPSEEK_API_KEY else 'EMPTY'}")
 # ---------------------------------------------------------------------------
 # Behaviour tweaks
 # ---------------------------------------------------------------------------
