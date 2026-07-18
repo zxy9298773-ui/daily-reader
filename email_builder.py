@@ -106,6 +106,55 @@ def build_email(articles: List[Dict], date_str: str = "") -> str:
 </html>"""
 
 
+def build_empty_email(date_str: str = "") -> str:
+    """Build a short "no new articles today" placeholder HTML."""
+    if not date_str:
+        from datetime import date
+        date_str = date.today().strftime("%Y-%m-%d")
+    return f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Daily Reader — {date_str} — 暂无新文章</title>
+</head>
+<body style="margin:0;padding:0;background-color:{BG_PAGE};font-family:{FONT_BODY};">
+<table width="100%" cellpadding="0" cellspacing="0" style="background-color:{BG_PAGE};">
+<tr><td align="center" style="padding:30px 15px;">
+
+  <table width="640" cellpadding="0" cellspacing="0" style="max-width:640px;background-color:{BG_CARD};border-radius:12px;overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,.04);">
+
+    <!-- header -->
+    <tr><td style="padding:36px 40px 20px;border-bottom:1px solid {BORDER_LIGHT};text-align:center;">
+      <h1 style="margin:0;font-size:24px;font-weight:700;color:{TEXT_PRIMARY};letter-spacing:-.5px;font-family:Georgia,'Times New Roman',Times,serif;">Daily Reader</h1>
+      <p style="margin:6px 0 0;font-size:13px;color:{TEXT_MUTED};">{date_str} · Your daily dose of reading &amp; learning</p>
+    </td></tr>
+
+    <!-- 暂无新文章提示 -->
+    <tr><td style="padding:60px 40px;text-align:center;">
+      <p style="margin:0 0 12px;font-size:15px;color:{TEXT_MUTED};line-height:1.6;">
+        Today&rsquo;s RSS feeds haven&rsquo;t published anything new yet.
+      </p>
+      <p style="margin:0;font-size:14px;color:{TEXT_META};line-height:1.6;">
+        今日 RSS 源暂无新内容。<br>
+        Check back tomorrow for fresh articles.
+      </p>
+    </td></tr>
+
+    <!-- footer -->
+    <tr><td style="padding:24px 40px;border-top:1px solid {BORDER_LIGHT};">
+      <p style="margin:0;font-size:12px;color:#bbb;text-align:center;">
+        Daily Reader · Powered by DeepSeek
+      </p>
+    </td></tr>
+
+  </table>
+
+</td></tr></table>
+</body>
+</html>"""
+
+
 # ═══════════════════════════════════════════════════════════════════
 #  per-article section
 # ═══════════════════════════════════════════════════════════════════

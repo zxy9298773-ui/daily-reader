@@ -16,7 +16,7 @@ from datetime import date
 import config
 from fetcher import fetch_articles
 from ai_processor import process_article
-from email_builder import build_email
+from email_builder import build_email, build_empty_email
 from sender import send_email, _print_to_console
 from cleanup import cleanup_old_emails
 from history import get_sent_urls, mark_all_sent
@@ -54,7 +54,14 @@ def main():
     logger.info("Fetched %d new article(s)", len(articles))
 
     if not articles:
-        logger.warning("No articles fetched – exiting.")
+        logger.warning("No articles fetched – sending placeholder email.")
+        today_str = date.today().strftime("%Y-%m-%d")
+        subject = f"Daily Reader — {today_str} — 暂无新文章"
+        html = build_empty_email(today_str)
+        if args.send:
+            send_email(subject, html)
+        else:
+            _print_to_console(subject, html)
         sys.exit(0)
 
     # ── 2. Process with DeepSeek ──────────────────────────────────
@@ -73,7 +80,35 @@ def main():
             logger.exception("Failed to process: %s", title)
 
     if not processed:
-        logger.warning("No articles processed – exiting.")
+        logger.warning("No articles processed – sending placeholder email.")
+        today_str = date.today().strftime("%Y-%m-%d")
+        subject = f"Daily Reader — {today_str} — 暂无新文章"
+        html = build_empty_email(today_str)
+        if args.send:
+            send_email(subject, html)
+        else:
+            _print_to_console(subject, html)
+        sys.exit(0)
+
+    # ── 2.5 二次过滤：发送前再检查一遍已发送记录 ────────────────
+    sent_urls = get_sent_urls()
+    if sent_urls:
+        before = len(processed)
+        processed = [a for a in processed if a.get("url") not in sent_urls]
+        skipped = before - len(processed)
+        if skipped:
+            logger.info("Secondary filter removed %d already-sent article(s)", skipped)
+
+    if not processed:
+        logger.warning("All articles already sent before – sending placeholder email.")
+        today_str = date.today().strftime("%Y-%m-%d")
+        subject = f"Daily Reader — {today_str} — 暂无新文章"
+        html = build_empty_email(today_str)
+        if args.send:
+            send_email(subject, html)
+            cleanup_old_emails()
+        else:
+            _print_to_console(subject, html)
         sys.exit(0)
 
     # ── 3. Build email ────────────────────────────────────────────
