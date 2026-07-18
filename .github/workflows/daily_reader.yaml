@@ -3,7 +3,7 @@ name: Daily Reader - 外刊推送
 on:
   workflow_dispatch:
   schedule:
-    # 每天北京时间 7:00 (= UTC 23:00)
+    - cron: '0 5 * * *' 
     - cron: '0 23 * * *'
 
 jobs:
