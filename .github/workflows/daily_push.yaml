@@ -1,10 +1,8 @@
 name: Daily Auto Push
-
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 3 * * *'
-
+    - cron: '0 3 * * *'        # UTC 3:00 = 北京时间 11:00
 jobs:
   auto-push:
     runs-on: ubuntu-latest
