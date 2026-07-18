@@ -52,7 +52,7 @@ FONT_BODY = f"-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue
 # ───────────────────────────────────────────────────────────────────
 
 
-def build_email(articles: List[Dict]) -> str:
+def build_email(articles: List[Dict], date_str: str = "") -> str:
     """Assemble the full HTML newsletter from *articles*."""
     articles_html = "\n".join(
         _article_section(a) for a in articles
@@ -65,7 +65,7 @@ def build_email(articles: List[Dict]) -> str:
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Daily Reader</title>
+  <title>Daily Reader — {date_str}</title>
 </head>
 <body style="margin:0;padding:0;background-color:{BG_PAGE};font-family:{FONT_BODY};">
 <table width="100%" cellpadding="0" cellspacing="0" style="background-color:{BG_PAGE};">
@@ -79,7 +79,7 @@ def build_email(articles: List[Dict]) -> str:
       <table width="100%" cellpadding="0" cellspacing="0"><tr>
         <td>
           <h1 style="margin:0;font-size:24px;font-weight:700;color:{TEXT_PRIMARY};letter-spacing:-.5px;font-family:Georgia,'Times New Roman',Times,serif;">Daily Reader</h1>
-          <p style="margin:6px 0 0;font-size:13px;color:{TEXT_MUTED};">Your daily dose of reading &amp; learning</p>
+          <p style="margin:6px 0 0;font-size:13px;color:{TEXT_MUTED};">{date_str} · Your daily dose of reading &amp; learning</p>
         </td>
         <td align="right" valign="top" style="font-size:13px;color:{TEXT_META};white-space:nowrap;">
           {len(articles)} article{"s" if len(articles) != 1 else ""} · {total_vocab} word{(total_vocab != 1) * "s"}

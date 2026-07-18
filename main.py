@@ -11,6 +11,7 @@ Usage
 import argparse
 import logging
 import sys
+from datetime import date
 
 import config
 from fetcher import fetch_articles
@@ -80,12 +81,13 @@ def main():
     logger.info("  Step 3/4 — Building HTML email")
     logger.info("=" * 48)
 
+    today_str = date.today().strftime("%Y-%m-%d")
     first = processed[0]
     if first.get("is_link_list"):
-        subject = "Daily Reader — Link List"
+        subject = f"Daily Reader — {today_str} — Link List"
     else:
-        subject = f"Daily Reader — {first['source']} & more"
-    html = build_email(processed)
+        subject = f"Daily Reader — {today_str} — {first['source']} & more"
+    html = build_email(processed, date_str=today_str)
 
     # ── 4. Send (or print) ────────────────────────────────────────
     if args.send:
