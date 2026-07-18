@@ -3,7 +3,7 @@ name: Daily Reader - 外刊推送
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 7 * * *' 
+    - cron: '0 9 * * *'  
 
 jobs:
   daily-reader:
@@ -42,9 +42,10 @@ jobs:
           FROM_EMAIL: ${{ secrets.FROM_EMAIL }}
         run: python main.py --send
       - name: 推送已发送记录回仓库
-        run: |
+       run: |
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
           git add sent_articles.json
           git diff --cached --quiet || git commit -m "📝 更新已发送文章记录 [skip ci]"
-          git push
+          git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
+          git push origin HEAD:${{ github.ref_name }}
