@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 _client = OpenAI(
     api_key=config.DEEPSEEK_API_KEY,
     base_url=config.DEEPSEEK_BASE_URL,
+    timeout=30,
 )
 
 DEFAULT_KWARGS = dict(
