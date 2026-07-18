@@ -1,25 +1,26 @@
-name: Daily Push
+name: Daily Auto Push
+
 on:
-  schedule:
-    - cron: '0 0 * * *'
   workflow_dispatch:
+  schedule:
+    - cron: '0 3 * * *'
+
 jobs:
-  push:
+  auto-push:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v4
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-      - name: Run script
-        env:
-          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-          FROM_EMAIL: ${{ secrets.EMAIL_ADDRESS }}
-          TO_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
-          SMTP_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
-          SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
-          SMTP_PORT: ${{ secrets.SMTP_PORT }}
-        run: python main.py --send
+      - uses: actions/checkout@v4.2.2
+      - name: Generate daily content
+        run: |
+          echo "# Daily Update $(date '+%Y-%m-%d %H:%M:%S UTC+8')" >> README.md
+          echo "" >> README.md
+          echo "This file is automatically updated by GitHub Actions" >> README.md
+      - name: Push to repository
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git add .
+          git commit -m "🔄 Daily auto update $(date '+%Y-%m-%d') [skip ci]"
+          git push
