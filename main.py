@@ -145,13 +145,17 @@ def run_pipeline(send_mode: bool = False):
 
 
 # ── HTTP 接口（给 Railway Cron 用）─────────────────────────────
+import threading  # 如果文件顶部没有，加这一行
+
 @app.route("/cron/trigger")
 def cron_trigger():
     """Railway Cron 定时访问这个地址，触发发邮件"""
     logger.info("🔥【定时任务触发】开始执行完整流程...")
-    run_pipeline(send_mode=True)
-    return "OK - 邮件已发送", 200
-
+    # 在后台线程执行，不阻塞 HTTP 请求
+    thread = threading.Thread(target=run_pipeline, kwargs={"send_mode": True})
+    thread.daemon = True
+    thread.start()
+    return "OK - 任务已启动", 200
 
 @app.route("/health")
 def health():
