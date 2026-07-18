@@ -1,0 +1,40 @@
+name: Daily Reader - 外刊推送
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 每天北京时间 7:00 (= UTC 23:00)
+    - cron: '0 23 * * *'
+
+jobs:
+  daily-reader:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: daily_reader
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: daily_reader/requirements.txt
+
+      - name: 安装依赖
+        run: pip install -r requirements.txt
+
+      - name: 创建 .env 文件
+        run: |
+          cat > .env << 'EOF'
+          DEEPSEEK_API_KEY=${{ secrets.DEEPSEEK_API_KEY }}
+          DEEPSEEK_MODEL=${{ secrets.DEEPSEEK_MODEL || 'deepseek-chat' }}
+          SMTP_PASSWORD=${{ secrets.SMTP_PASSWORD }}
+          TO_EMAIL=${{ secrets.TO_EMAIL }}
+          FROM_EMAIL=${{ secrets.FROM_EMAIL }}
+          EOF
+
+      - name: 抓取并处理文章，发送邮件
+        run: python main.py --send
