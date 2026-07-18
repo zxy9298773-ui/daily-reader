@@ -18,8 +18,8 @@ DEEPSEEK_MODEL: str = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
 # ---------------------------------------------------------------------------
 # SMTP (QQ Mail)
 # ---------------------------------------------------------------------------
-SMTP_HOST: str = "smtp.qq.com"
-SMTP_PORT: int = 465
+SMTP_HOST: str = os.getenv("SMTP_HOST", "smtp.qq.com")
+SMTP_PORT: int = int(os.getenv("SMTP_PORT", "587"))
 SMTP_PASSWORD: str = os.getenv("SMTP_PASSWORD", "")
 TO_EMAIL: str = os.getenv("TO_EMAIL", "")
 FROM_EMAIL: str = os.getenv("FROM_EMAIL", "")
