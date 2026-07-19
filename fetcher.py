@@ -1,17 +1,17 @@
 """
 Fetch articles from configured RSS feeds using feedparser + multi-strategy extraction.
+
 Skips articles that are too short (likely paywalled or broken).
 """
+
 import re
 import feedparser
 from typing import List, Dict, Optional
 import logging
-
 import config
 from history import get_sent_urls
 
 logger = logging.getLogger(__name__)
-
 
 # ---------------------------------------------------------------------------
 #  Text cleaning — remove junk before paragraph splitting
@@ -57,7 +57,7 @@ def _is_junk_line(line: str) -> bool:
     if not stripped:
         return True
     # Very short lines (≤ 15 chars) without sentence-ending punctuation
-    if len(stripped) <= 15 and not stripped.rstrip().endswith((".", "!", "?", ":", "”", '"', "。")):
+    if len(stripped) <= 15 and not stripped.rstrip().endswith((".", "!", "?", ":", "”", '"', "。", "！", "？", "」")):
         return True
     # Match junk patterns
     for pat in _JUNK_PATTERNS:
@@ -70,9 +70,9 @@ def _clean_text(raw: str) -> str:
     """Remove junk lines from extracted article text.
 
     Strategies:
-      1. Strip each line; discard empty / junk lines.
-      2. Group consecutive non-junk lines into paragraphs (double newline).
-      3. Within a paragraph, rejoin mid-wrapped lines into a single line.
+    1. Strip each line; discard empty / junk lines.
+    2. Group consecutive non-junk lines into paragraphs (double newline).
+    3. Within a paragraph, rejoin mid-wrapped lines into a single line.
     """
     # Split the raw text by double-newlines to identify paragraph boundaries
     paragraphs_raw = re.split(r"\n\s*\n", raw)
@@ -116,7 +116,6 @@ def _is_truncated(cleaned: str) -> bool:
         return True
 
     # At least 40 % of paragraphs should be substantial (≥100 chars)
-    # (lowered from 50% because _clean_text no longer filters short paragraphs)
     if paragraphs:
         substantial_ratio = len(long_paragraphs) / len(paragraphs)
         if substantial_ratio < 0.4:
@@ -129,8 +128,6 @@ def _is_truncated(cleaned: str) -> bool:
             return True
 
     # Average paragraph length check — reject topic-listing pages
-    # A real article has paragraphs averaging ≥120 chars; a listing
-    # of topic headlines / snippets averages well below that.
     avg_para_len = sum(len(p) for p in paragraphs) / len(paragraphs)
     if avg_para_len < 120:
         logger.debug(
@@ -140,10 +137,6 @@ def _is_truncated(cleaned: str) -> bool:
         return True
 
     # ── mid-article truncation signal cross-check ──────────────────
-    # Only check the CLEANED text.  If _clean_text already removed the
-    # "subscribe" / "continue reading" junk lines, the signal won't be
-    # present — and the article is fine.  A signal that *survives*
-    # cleaning is genuinely in the article body.
     mid_article_signals = [
         r"to\s+continue\s+reading",
         r"become\s+a\s+(member|subscriber|supporter)",
@@ -319,8 +312,8 @@ def _extract_article(entry, source_name: str) -> Optional[Dict]:
     """Try to extract text + metadata from a single RSS entry.
 
     Priority:
-      1. Full article text via ``extract_text()`` (newspaper3k / …)
-      2. RSS summary / description as fallback (marked ``is_summary``)
+    1. Full article text via ``extract_text()`` (newspaper3k / …)
+    2. RSS summary / description as fallback (marked ``is_summary``)
 
     Returns ``None`` only when both strategies fail.
     """
@@ -328,47 +321,47 @@ def _extract_article(entry, source_name: str) -> Optional[Dict]:
     if not url:
         return None
 
-text = extract_text(url)
-   is_summary = False
+    text = extract_text(url)
+    is_summary = False
 
-   # 收集RSS中所有可能的文本来源
-   rss_candidates = []
+    # ⭐ 收集RSS中所有可能的文本来源
+    rss_candidates = []
 
-   desc = entry.get("description", "") or entry.get("summary", "")
-   if desc:
-       rss_candidates.append(("description", _strip_html(desc)))
+    desc = entry.get("description", "") or entry.get("summary", "")
+    if desc:
+        rss_candidates.append(("description", _strip_html(desc)))
 
-   # content:encoded — 很多外刊把全文放在这里
-   content_list = entry.get("content", [])
-   if content_list:
-       for c in content_list:
-           val = c.get("value", "")
-           if val:
-               rss_candidates.append(("content:encoded", _strip_html(val)))
+    # content:encoded — 很多外刊把全文放在这里
+    content_list = entry.get("content", [])
+    if content_list:
+        for c in content_list:
+            val = c.get("value", "")
+            if val:
+                rss_candidates.append(("content:encoded", _strip_html(val)))
 
-   # 从RSS中取最长的那个
-   best_rss = ""
-   best_rss_label = ""
-   for label, txt in rss_candidates:
-       if len(txt) > len(best_rss):
-           best_rss = txt
-           best_rss_label = label
+    # 从RSS中取最长的那个
+    best_rss = ""
+    best_rss_label = ""
+    for label, txt in rss_candidates:
+        if len(txt) > len(best_rss):
+            best_rss = txt
+            best_rss_label = label
 
-   # 取 extract_text 和 最佳RSS文本 中更长的
-   if text and best_rss:
-       if len(best_rss) > len(text):
-           text = best_rss
-           is_summary = True
-           logger.info("  ✅ 使用 RSS %s (%d 字) > extract_text (%d 字)", best_rss_label, len(best_rss), len(text))
-       else:
-           logger.info(" >= RSS %s (%d 字)", len(text), best_rss_label, len(best_rss))
-   elif best_r:
-text = best_rss
-       is_summary = True
-       logger.info("  ✅ 使用 RSS %s (%d 字)", best_rss_label, len(best_rss))
-   elif not text:
-       logger.debug("No valid content for: %s", url)
-       return None
+    # 取 extract_text 和 最佳RSS文本 中更长的
+    if text and best_rss:
+        if len(best_rss) > len(text):
+            text = best_rss
+            is_summary = True
+            logger.info("  ✅ 使用 RSS %s (%d 字) > extract_text (%d 字)", best_rss_label, len(best_rss), len(text))
+        else:
+            logger.info("  ✅ 使用 extract_text (%d 字) >= RSS %s (%d 字)", len(text), best_rss_label, len(best_rss))
+    elif best_rss:
+        text = best_rss
+        is_summary = True
+        logger.info("  ✅ 使用 RSS %s (%d 字)", best_rss_label, len(best_rss))
+    elif not text:
+        logger.debug("No valid content for: %s", url)
+        return None
 
     # Roundup / newsletter check — reject multi-topic articles
     title = entry.get("title", "")
@@ -397,10 +390,12 @@ def fetch_articles(skip_urls: set[str] | None = None) -> List[Dict]:
     """Return up to ``MAX_ARTICLES_TOTAL`` parsed-article dicts.
 
     Two-pass strategy:
-      1. **Diversity pass** — take at most **one** article from each
-         feed so the newsletter contains sources from different outlets.
-      2. **Fallback pass** — if not enough articles after pass 1, go
-         back to feeds that already gave us an article and take more.
+
+    1. **Diversity pass** — take at most **one** article from each
+       feed so the newsletter contains sources from different outlets.
+
+    2. **Fallback pass** — if not enough articles after pass 1, go
+       back to feeds that already gave us an article and take more.
 
     Respects the ``skip_urls`` set (previously pushed articles are
     skipped entirely without attempting extraction).
@@ -412,6 +407,7 @@ def fetch_articles(skip_urls: set[str] | None = None) -> List[Dict]:
 
     # Parse all feeds up front so we only fetch each RSS URL once
     feed_buckets: list[dict] = []  # {"name": str, "url": str, "entries": [...]}
+
     for feed in config.RSS_FEEDS:
         logger.info("Parsing feed: %s …", feed["name"])
         try:
@@ -435,16 +431,13 @@ def fetch_articles(skip_urls: set[str] | None = None) -> List[Dict]:
     for bucket in feed_buckets:
         if len(articles) >= config.MAX_ARTICLES_TOTAL:
             break
-
         taken_one = False
         for entry in bucket["entries"]:
             if len(articles) >= config.MAX_ARTICLES_TOTAL:
                 break
-
             url = entry.get("link", "")
             if not url or url in skip_urls or url in used_urls:
                 continue
-
             article = _extract_article(entry, bucket["name"])
             if article:
                 articles.append(article)
@@ -458,7 +451,6 @@ def fetch_articles(skip_urls: set[str] | None = None) -> List[Dict]:
                 break  # max 1 per feed in pass 1
             else:
                 failed_urls.add(url)  # don't retry in pass 2
-
         if not taken_one:
             logger.debug("  No valid article from %s (pass 1)", bucket["name"])
 
@@ -477,11 +469,9 @@ def fetch_articles(skip_urls: set[str] | None = None) -> List[Dict]:
             for entry in bucket["entries"]:
                 if len(articles) >= config.MAX_ARTICLES_TOTAL:
                     break
-
                 url = entry.get("link", "")
                 if not url or url in skip_urls or url in used_urls or url in failed_urls:
                     continue
-
                 article = _extract_article(entry, bucket["name"])
                 if article:
                     articles.append(article)
@@ -512,7 +502,6 @@ def fetch_articles(skip_urls: set[str] | None = None) -> List[Dict]:
                 title = entry.get("title", "")
                 if url and title and url not in skip_urls:
                     links.append({"title": title, "url": url})
-
         if links:
             logger.info(
                 "Fallback: building link list with %d entries",
