@@ -72,7 +72,7 @@ def build_email(articles: List[Dict], date_str: str = "") -> str:
 <tr><td align="center" style="padding:30px 15px;">
 
   <!-- ─────────── outer container ─────────── -->
-  <!-- 🔧 修改 4：去掉 overflow:hidden，避免裁剪可点击区域 -->
+  <!-- 🔧 修改 4：去掉 overflow:hidden，避免邮件客户端裁剪链接点击区域 -->
   <table width="640" cellpadding="0" cellspacing="0" style="max-width:640px;background-color:{BG_CARD};border-radius:12px;box-shadow:0 1px 4px rgba(0,0,0,.04);">
 
     <!-- header -->
@@ -162,7 +162,7 @@ def build_empty_email(date_str: str = "") -> str:
 
 def _article_section(article: Dict) -> str:
     title = _esc(article.get("title", ""))
-    # 🔧 修改 2：用 _url_esc 替代 _esc，保留 &
+    # 🔧 修改 2：用 _url_esc 替代 _esc，保留 & 不变
     raw_url = article.get("url") or ""
     url = _url_esc(raw_url)
     source = _esc(article.get("source", ""))
@@ -177,7 +177,7 @@ def _article_section(article: Dict) -> str:
         # ── Link-list: show clickable titles from all feeds ──
         links = article.get("link_entries", [])
         links_html = "".join(
-            # 🔧 修改 1+3：用 _url_esc 替代 _esc，加 target="_blank"
+            # 🔧 修改 1+3：用 _url_esc + target="_blank"
             f'<tr><td style="padding:6px 0;font-size:14px;line-height:1.5;">'
             f'<a href="{_url_esc(link["url"])}" '
             f'target="_blank" rel="noopener noreferrer" '
@@ -346,19 +346,18 @@ def _esc(text: str) -> str:
     return html_mod.escape(str(text), quote=True)
 
 
-# 🔧 修改 1：新增 URL 专用转义函数，& → &amp; 在邮件客户端中会破坏链接
+# 🔧 修改 1：新增 URL 专用转义函数
 def _url_esc(url: str) -> str:
     """Prepare a URL for href attribute — preserves & as-is.
 
-    Most email clients (QQ, 163, Outlook for Windows, Gmail app)
-    mishandle &amp; in href attributes, causing parameter truncation.
-    We therefore keep & unescaped, which is valid in practice and widely
-    supported by all modern mail clients.
+    Standard html.escape() converts & to &amp;, which breaks link
+    parameters in QQ mail, 163 mail, Outlook for Windows, and Gmail.
+    We keep & unescaped, which is universally supported by mail clients.
     """
     if not url:
         return ""
     url = str(url)
-    # Only guard against characters that would break the HTML attribute boundary
+    # Only guard against characters that would break the HTML attribute
     url = url.replace('"', '%22')
     return url
 
