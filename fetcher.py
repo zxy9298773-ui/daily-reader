@@ -328,22 +328,47 @@ def _extract_article(entry, source_name: str) -> Optional[Dict]:
     if not url:
         return None
 
-    text = extract_text(url)
-    is_summary = False
+text = extract_text(url)
+   is_summary = False
 
-    if not text:
-        # Fallback: use RSS summary
-        summary = entry.get("summary", "") or entry.get("description", "")
-        if not summary:
-            logger.debug("No summary available for: %s", url)
-            return None
-        summary = _strip_html(summary)
-        if len(summary) < 50:
-            logger.debug("RSS summary too short (%d chars): %s", len(summary), url)
-            return None
-        text = summary
-        is_summary = True
-        logger.info("  Using RSS summary (%d chars) as fallback for: %s", len(summary), url[:60])
+   # 收集RSS中所有可能的文本来源
+   rss_candidates = []
+
+   desc = entry.get("description", "") or entry.get("summary", "")
+   if desc:
+       rss_candidates.append(("description", _strip_html(desc)))
+
+   # content:encoded — 很多外刊把全文放在这里
+   content_list = entry.get("content", [])
+   if content_list:
+       for c in content_list:
+           val = c.get("value", "")
+           if val:
+               rss_candidates.append(("content:encoded", _strip_html(val)))
+
+   # 从RSS中取最长的那个
+   best_rss = ""
+   best_rss_label = ""
+   for label, txt in rss_candidates:
+       if len(txt) > len(best_rss):
+           best_rss = txt
+           best_rss_label = label
+
+   # 取 extract_text 和 最佳RSS文本 中更长的
+   if text and best_rss:
+       if len(best_rss) > len(text):
+           text = best_rss
+           is_summary = True
+           logger.info("  ✅ 使用 RSS %s (%d 字) > extract_text (%d 字)", best_rss_label, len(best_rss), len(text))
+       else:
+           logger.info(" >= RSS %s (%d 字)", len(text), best_rss_label, len(best_rss))
+   elif best_r:
+text = best_rss
+       is_summary = True
+       logger.info("  ✅ 使用 RSS %s (%d 字)", best_rss_label, len(best_rss))
+   elif not text:
+       logger.debug("No valid content for: %s", url)
+       return None
 
     # Roundup / newsletter check — reject multi-topic articles
     title = entry.get("title", "")
