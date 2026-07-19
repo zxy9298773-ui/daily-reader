@@ -21,9 +21,9 @@ logger = logging.getLogger(__name__)
 _JUNK_PATTERNS = [
     r"support\s+(us|our|the\s+.*work)",
     r"donate|donation",
-    r"subscribe|newsletter|sign\s*up|sign\s*in",
+    r"subscribe|newsletter|\bsign\s*[ui]p?\b",
     r"follow\s+us",
-    r"advertisement|ad\s|sponsored?",
+    r"advertisement|sponsored?",
     r"sponsor\s+(message|content|story)",
     r"read\s+more|related\s+(stories|articles|content|topics|reading|links|coverage)",
     r"©|copyright|all\s+rights\s+reserved",
@@ -46,7 +46,7 @@ _JUNK_PATTERNS = [
     r"comments?\s+(are\s+)?(closed|disabled)",
     r"external\s+(link|site|links)",
     r"load\s+more|show\s+more",
-    r"the\s+latest|latest\s+(news|updates|stories)",
+    r"the\s+latest\s+(news|updates|stories|headlines)",
     r"updates?\s+and\s+(analysis|coverage)",
 ]
 
