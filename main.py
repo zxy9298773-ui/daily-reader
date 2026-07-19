@@ -13,11 +13,16 @@ Railway Cron 设置:
   Base URL:  https://你的项目.up.railway.app/cron/trigger
   Cron Timer: 0 1 * * *      (UTC 1:00 = 北京 9:00)
 """
+
 import argparse
 import logging
 import sys
 import os
 from datetime import date
+
+import requests
+from bs4 import BeautifulSoup
+
 from flask import Flask
 
 import config
@@ -38,10 +43,45 @@ logger = logging.getLogger("daily-reader")
 app = Flask(__name__)
 
 
-# ── 核心逻辑抽出来 ─────────────────────────────────────────────
+# ⭐ 新增：从文章URL抓取完整正文，保留所有段落
+def fetch_full_article_text(url: str) -> str:
+    """从文章URL抓取完整正文，保留所有自然段"""
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0.0.0 Safari/537.36"
+        )
+    }
+    try:
+        resp = requests.get(url, headers=headers, timeout=20)
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "html.parser")
+
+        # 移除干扰元素
+        for tag in soup(
+            ["script", "style", "nav", "footer", "aside",
+             "noscript", "header", "form", "button", "iframe",
+             "svg", "img", "figure", "figcaption"]
+        ):
+            tag.decompose()
+
+        # 提取所有 <p> 段落，用双换行分隔（保留段落结构）
+        paragraphs = soup.find_all("p")
+        text = "\n\n".join(
+            p.get_text(strip=True) for p in paragraphs if p.get_text(strip=True)
+        )
+        return text
+    except Exception as e:
+        logger.warning(f"全文提取失败: {url} — {e}")
+        return ""
+
+
+# ── 核心逻辑 ───────────────────────────────────────────────────
 def run_pipeline(send_mode: bool = False):
-    """Run the full fetch → process → build → send pipeline."""
-    # ── 1. Fetch ───────────────────────────────────────────────────
+    """Run the full fetch → enrich → process → build → send pipeline."""
+
+    # ── 1. Fetch ───────────────────────────────────────────────
     logger.info("=" * 48)
     logger.info("  Step 1/4 — Fetching articles from RSS feeds")
     logger.info("=" * 48)
@@ -64,7 +104,35 @@ def run_pipeline(send_mode: bool = False):
             _print_to_console(subject, html)
         return
 
-    # ── 2. Process with DeepSeek ──────────────────────────────────
+    # ⭐ 新增 Step 1.5：全文提取（从文章原始URL抓取完整正文）
+    logger.info("=" * 48)
+    logger.info("  Step 1.5/4 — Fetching full article text from original URLs")
+    logger.info("=" * 48)
+
+    for i, art in enumerate(articles, 1):
+        url = art.get("url", "")
+        title = art.get("title", "")[:50]
+        if not url:
+            logger.warning("  [%d/%d] %s — 无URL，跳过全文提取", i, len(articles), title)
+            continue
+
+        logger.info("  [%d/%d] %s …", i, len(articles), title)
+        full_text = fetch_full_article_text(url)
+
+        if full_text:
+            # 把完整正文写回 article，后面的步骤都会用到
+            art["content"] = full_text
+            paragraph_count = full_text.count("\n\n") + 1
+            logger.info(
+                "    ✓ 全文提取成功 — %d 字, %d 个段落",
+                len(full_text), paragraph_count
+            )
+        else:
+            logger.warning(
+                "    ✗ 全文提取失败，将使用RSS摘要（可能不完整）"
+            )
+
+    # ── 2. Process with DeepSeek ──────────────────────────────
     logger.info("=" * 48)
     logger.info("  Step 2/4 — Processing articles with DeepSeek AI")
     logger.info("=" * 48)
@@ -90,7 +158,7 @@ def run_pipeline(send_mode: bool = False):
             _print_to_console(subject, html)
         return
 
-    # ── 2.5 二次过滤 ─────────────────────────────────────────────
+    # ── 2.5 二次过滤 ─────────────────────────────────────────
     sent_urls = get_sent_urls()
     if sent_urls:
         before = len(processed)
@@ -111,7 +179,7 @@ def run_pipeline(send_mode: bool = False):
             _print_to_console(subject, html)
         return
 
-    # ── 3. Build email ────────────────────────────────────────────
+    # ── 3. Build email ────────────────────────────────────────
     logger.info("=" * 48)
     logger.info("  Step 3/4 — Building HTML email")
     logger.info("=" * 48)
@@ -122,13 +190,15 @@ def run_pipeline(send_mode: bool = False):
         subject = f"Daily Reader — {today_str} — Link List"
     else:
         subject = f"Daily Reader — {today_str} — {first['source']} & more"
+
     html = build_email(processed, date_str=today_str)
 
-    # ── 4. Send ────────────────────────────────────────────────────
+    # ── 4. Send ────────────────────────────────────────────────
     if send_mode:
         logger.info("=" * 48)
         logger.info("  Step 4/4 — Sending email")
         logger.info("=" * 48)
+
         if send_email(subject, html):
             logger.info("=" * 48)
             logger.info("  Cleanup — deleting emails ≥%d days old", config.CLEANUP_AFTER_DAYS)
@@ -145,17 +215,17 @@ def run_pipeline(send_mode: bool = False):
 
 
 # ── HTTP 接口（给 Railway Cron 用）─────────────────────────────
-import threading  # 如果文件顶部没有，加这一行
+import threading
 
 @app.route("/cron/trigger")
 def cron_trigger():
     """Railway Cron 定时访问这个地址，触发发邮件"""
     logger.info("🔥【定时任务触发】开始执行完整流程...")
-    # 在后台线程执行，不阻塞 HTTP 请求
     thread = threading.Thread(target=run_pipeline, kwargs={"send_mode": True})
     thread.daemon = True
     thread.start()
     return "OK - 任务已启动", 200
+
 
 @app.route("/health")
 def health():
@@ -187,11 +257,9 @@ def main():
     args = parser.parse_args()
 
     if args.server:
-        # 🚀 Railway 模式：启动 Web 服务，等 Cron 来触发
         logger.info("🚀 启动 HTTP 服务，端口 %d ...", args.port)
         app.run(host="0.0.0.0", port=args.port)
     else:
-        # 💻 本地模式：直接运行一次
         run_pipeline(send_mode=args.send)
 
 
