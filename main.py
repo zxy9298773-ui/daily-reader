@@ -96,25 +96,6 @@ def run_pipeline(send_mode: bool = False):
             _print_to_console(subject, html)
         return
 
-    # ⭐ Step 1.5：从原文提取所有段落，覆盖fetcher可能不完整的文本
-    logger.info("=" * 48)
-    logger.info("  Step 1.5/4 — Fetching all paragraphs from original URLs")
-    logger.info("=" * 48)
-
-    for i, art in enumerate(articles, 1):
-        url = art.get("url", "")
-        title = art.get("title", "")[:50]
-        if not url:
-            continue
-        logger.info("  [%d/%d] %s …", i, len(articles), title)
-        full_text = fetch_all_paragraphs(url)
-        if full_text and len(full_text) >= 500:
-            para_count = full_text.count("\n\n") + 1
-            logger.info("    ✅ 提取到 %d 字，%d 个段落", len(full_text), para_count)
-            art["text"] = full_text
-        else:
-            logger.warning("    ⚠️ 原文提取不完整，使用已有文本")
-
     # ── 2. Process with DeepSeek ──────────────────────────────
     logger.info("=" * 48)
     logger.info("  Step 2/4 — Processing articles with DeepSeek AI")
