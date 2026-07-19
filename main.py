@@ -43,11 +43,11 @@ logger = logging.getLogger("daily-reader")
 app = Flask(__name__)
 
 
-# ⭐ 新增：全文兜底函数 — 从原文URL提取所有<p>段落，确保段落一个不落
-def ensure_full_text(url: str, existing_text: str) -> str:
-    """如果已有文本疑似不完整，从原文URL重新提取完整正文"""
+# ⭐ 全文兜底：从原文URL提取所有<p>段落，确保段落一个不落
+def ensure_full_paragraphs(url: str, existing_text: str) -> str:
+    """如果已有文本疑似不完整（<2000字），从原文URL重新提取完整正文"""
+    # 如果文本已经很长（>=2000字），大概率已经完整
     if len(existing_text) >= 2000:
-        # 文本已经够长，直接返回
         return existing_text
 
     headers = {
@@ -68,23 +68,23 @@ def ensure_full_text(url: str, existing_text: str) -> str:
                          "svg", "img", "figure", "figcaption"]):
             tag.decompose()
 
-        # 提取所有<p>段落，双换行分隔（保留原始段落结构）
+        # 提取所有<p>段落，用双换行分隔（保留原始段落结构）
         paragraphs = soup.find_all("p")
         full_text = "\n\n".join(
             p.get_text(strip=True) for p in paragraphs if p.get_text(strip=True)
         )
 
-        if len(full_text) > len(existing_text):
+        if len(full_text) > len(existing_text) and len(full_text) >= 500:
+            para_count = full_text.count("\n\n") + 1
             logger.info(
-                "    ✅ 全文兜底成功：从 %d 字扩展到 %d 字，%d 个段落",
-                len(existing_text), len(full_text),
-                full_text.count("\n\n") + 1
+                "    ✅ 全文兜底成功：%d 字 → %d 字，%d 个段落",
+                len(existing_text), len(full_text), para_count
             )
             return full_text
         else:
             return existing_text
     except Exception as e:
-        logger.warning("    ⚠️ 全文兜底失败: %s", e)
+        logger.warning("    ⚠️ 全文兜底失败 (%s)，使用已有文本", e)
         return existing_text
 
 
@@ -115,7 +115,7 @@ def run_pipeline(send_mode: bool = False):
             _print_to_console(subject, html)
         return
 
-    # ⭐ 全文兜底：确保每篇文章段落完整
+    # ⭐ Step 1.5：全文兜底 — 确保每篇文章段落完整
     logger.info("=" * 48)
     logger.info("  Step 1.5/4 — Ensuring full article text with all paragraphs")
     logger.info("=" * 48)
@@ -126,8 +126,11 @@ def run_pipeline(send_mode: bool = False):
         if not url:
             continue
         existing = art.get("text", "")
-        logger.info("  [%d/%d] %s … (当前 %d 字)", i, len(articles), title, len(existing))
-        art["text"] = ensure_full_text(url, existing)
+        logger.info(
+            "  [%d/%d] %s … (当前 %d 字)",
+            i, len(articles), title, len(existing)
+        )
+        art["text"] = ensure_full_paragraphs(url, existing)
 
     # ── 2. Process with DeepSeek ──────────────────────────────
     logger.info("=" * 48)
@@ -233,7 +236,7 @@ def health():
 # ── 入口 ─────────────────────────────────────────────────────────
 def main():
     parser = argparse.ArgumentParser(
-        description="Daily Reader – translate articles & learn vocabulary"
+        description="Daily Reader – fetch articles, translate & learn vocabulary"
     )
     parser.add_argument(
         "--send",
@@ -254,7 +257,7 @@ def main():
     args = parser.parse_args()
 
     if args.server:
-        logger.info("🚀 启动 HTTP 服务，端口 %d ...", args.port)
+        logger.info("🚀 启动 %d ...", args.port)
         app.run(host="0.0.0.0", port=args.port)
     else:
         run_pipeline(send_mode=args.send)
