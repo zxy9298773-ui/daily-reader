@@ -27,19 +27,19 @@ TO_EMAIL: str = os.getenv("TO_EMAIL", "")
 FROM_EMAIL: str = os.getenv("FROM_EMAIL", "")
 
 # ---------------------------------------------------------------------------
-# RSS feed sources — 使用 RSSHub 增强版，输出完整段落
+# RSS feed sources — 用回你原来的官方 RSS（稳定可靠）
 # ---------------------------------------------------------------------------
 ALL_FEEDS: List[Dict[str, str]] = [
-    {"name": "MIT Technology Review",  "url": "https://rsshub.app/mit/technologyreview"},
-    {"name": "ScienceDaily",           "url": "https://rsshub.app/sciencedaily"},
-    {"name": "The Conversation",       "url": "https://rsshub.app/theconversation/us"},
-    {"name": "The Guardian",           "url": "https://rsshub.app/guardian/uk"},
-    {"name": "BBC News",               "url": "https://rsshub.app/bbc"},
-    {"name": "New Scientist",          "url": "https://rsshub.app/newscientist"},
-    {"name": "Phys.org",               "url": "https://rsshub.app/phys"},
+    {"name": "MIT Technology Review",  "url": "https://www.technologyreview.com/feed/"},
+    {"name": "ScienceDaily",           "url": "https://www.sciencedaily.com/rss/all.xml"},
+    {"name": "The Conversation",       "url": "https://theconversation.com/us/feed"},
+    {"name": "The Guardian",           "url": "https://www.theguardian.com/us-news/rss"},
+    {"name": "BBC News",               "url": "https://feeds.bbci.co.uk/news/rss.xml"},
+    {"name": "New Scientist",          "url": "https://www.newscientist.com/feed/home"},
+    {"name": "Phys.org",               "url": "https://phys.org/rss-feed/"},
 ]
 
-# ⭐ 每天从7个源中随机选2个（用日期做种子，当天结果固定）
+# 每天从7个中随机选2个（用日期做种子，当天固定，不重复）
 random.seed(str(date.today()))
 RSS_FEEDS: List[Dict[str, str]] = random.sample(ALL_FEEDS, 2)
 
@@ -54,7 +54,7 @@ CLEANUP_AFTER_DAYS: int = 3
 CLEANUP_SEARCH_SUBJECT: str = "Daily Reader"
 
 # ---------------------------------------------------------------------------
-# Behaviour tweaks — 保持你原来的数量设置
+# Behaviour tweaks
 # ---------------------------------------------------------------------------
-MAX_ARTICLES_PER_FEED: int = 1   # 每个源取最新1篇
-MAX_ARTICLES_TOTAL: int = 2      # 每天总共2篇（2个源 × 1篇）
+MAX_ARTICLES_PER_FEED: int = 1
+MAX_ARTICLES_TOTAL: int = 2
