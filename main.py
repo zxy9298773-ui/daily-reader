@@ -43,9 +43,13 @@ logger = logging.getLogger("daily-reader")
 app = Flask(__name__)
 
 
-# ⭐ 新增：从文章URL抓取完整正文，保留所有段落
-def fetch_full_article_text(url: str) -> str:
-    """从文章URL抓取完整正文，保留所有自然段"""
+# ⭐ 新增：全文兜底函数 — 从原文URL提取所有<p>段落，确保段落一个不落
+def ensure_full_text(url: str, existing_text: str) -> str:
+    """如果已有文本疑似不完整，从原文URL重新提取完整正文"""
+    if len(existing_text) >= 2000:
+        # 文本已经够长，直接返回
+        return existing_text
+
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -59,27 +63,34 @@ def fetch_full_article_text(url: str) -> str:
         soup = BeautifulSoup(resp.text, "html.parser")
 
         # 移除干扰元素
-        for tag in soup(
-            ["script", "style", "nav", "footer", "aside",
-             "noscript", "header", "form", "button", "iframe",
-             "svg", "img", "figure", "figcaption"]
-        ):
+        for tag in soup(["script", "style", "nav", "footer", "aside",
+                         "noscript", "header", "form", "button", "iframe",
+                         "svg", "img", "figure", "figcaption"]):
             tag.decompose()
 
-        # 提取所有 <p> 段落，用双换行分隔（保留段落结构）
+        # 提取所有<p>段落，双换行分隔（保留原始段落结构）
         paragraphs = soup.find_all("p")
-        text = "\n\n".join(
+        full_text = "\n\n".join(
             p.get_text(strip=True) for p in paragraphs if p.get_text(strip=True)
         )
-        return text
+
+        if len(full_text) > len(existing_text):
+            logger.info(
+                "    ✅ 全文兜底成功：从 %d 字扩展到 %d 字，%d 个段落",
+                len(existing_text), len(full_text),
+                full_text.count("\n\n") + 1
+            )
+            return full_text
+        else:
+            return existing_text
     except Exception as e:
-        logger.warning(f"全文提取失败: {url} — {e}")
-        return ""
+        logger.warning("    ⚠️ 全文兜底失败: %s", e)
+        return existing_text
 
 
 # ── 核心逻辑 ───────────────────────────────────────────────────
 def run_pipeline(send_mode: bool = False):
-    """Run the full fetch → enrich → process → build → send pipeline."""
+    """Run the full fetch → process → build → send pipeline."""
 
     # ── 1. Fetch ───────────────────────────────────────────────
     logger.info("=" * 48)
@@ -104,33 +115,19 @@ def run_pipeline(send_mode: bool = False):
             _print_to_console(subject, html)
         return
 
-    # ⭐ 新增 Step 1.5：全文提取（从文章原始URL抓取完整正文）
+    # ⭐ 全文兜底：确保每篇文章段落完整
     logger.info("=" * 48)
-    logger.info("  Step 1.5/4 — Fetching full article text from original URLs")
+    logger.info("  Step 1.5/4 — Ensuring full article text with all paragraphs")
     logger.info("=" * 48)
 
     for i, art in enumerate(articles, 1):
         url = art.get("url", "")
         title = art.get("title", "")[:50]
         if not url:
-            logger.warning("  [%d/%d] %s — 无URL，跳过全文提取", i, len(articles), title)
             continue
-
-        logger.info("  [%d/%d] %s …", i, len(articles), title)
-        full_text = fetch_full_article_text(url)
-
-        if full_text:
-            # 把完整正文写回 article，后面的步骤都会用到
-            art["content"] = full_text
-            paragraph_count = full_text.count("\n\n") + 1
-            logger.info(
-                "    ✓ 全文提取成功 — %d 字, %d 个段落",
-                len(full_text), paragraph_count
-            )
-        else:
-            logger.warning(
-                "    ✗ 全文提取失败，将使用RSS摘要（可能不完整）"
-            )
+        existing = art.get("text", "")
+        logger.info("  [%d/%d] %s … (当前 %d 字)", i, len(articles), title, len(existing))
+        art["text"] = ensure_full_text(url, existing)
 
     # ── 2. Process with DeepSeek ──────────────────────────────
     logger.info("=" * 48)
