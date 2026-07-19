@@ -67,30 +67,39 @@ def _is_junk_line(line: str) -> bool:
 
 
 def _clean_text(raw: str) -> str:
-    """Remove junk lines from extracted article text.
+    """Remove junk paragraphs from extracted article text.
 
     Strategies:
-      1. Strip each line; discard empty / junk lines.
-      2. Group consecutive non-junk lines into paragraphs (double newline).
-      3. Within a paragraph, rejoin mid-wrapped lines into a single line.
+      1. Split the raw text by double-newlines into paragraph blocks.
+      2. For each block, collapse internal newlines into a single paragraph.
+      3. Discard very short junk-only blocks (≤ 150 chars that match junk
+         patterns), while unconditionally keeping substantive paragraphs
+         (> 150 chars) so that incidental junk within them is preserved.
+      4. Within a paragraph, rejoin mid-wrapped lines into a single line.
     """
-    # Split the raw text by double-newlines to identify paragraph boundaries
     paragraphs_raw = re.split(r"\n\s*\n", raw)
     clean_paragraphs = []
 
     for block in paragraphs_raw:
-        block_lines = [l.strip() for l in block.split("\n") if l.strip()]
-        # Filter out junk lines within the block
-        good_lines = [l for l in block_lines if not _is_junk_line(l)]
-        if not good_lines:
+        block_stripped = block.strip()
+        if not block_stripped:
             continue
-        # Rejoin into a single paragraph
-        paragraph = " ".join(good_lines)
-        # Remove extra whitespace
-        paragraph = re.sub(r"\s+", " ", paragraph).strip()
-        # No length filter — any paragraph with substantive content is kept.
-        # The _is_truncated() check at a higher level catches entire
-        # articles that are too short / junk-heavy.
+        # Collapse internal newlines into a single paragraph
+        paragraph = re.sub(r"\s+", " ", block_stripped).strip()
+
+        # Very short block: skip entirely
+        if len(paragraph) <= 20:
+            continue
+
+        # Substantive paragraph: keep unconditionally, incidental junk is tolerated
+        if len(paragraph) > 150:
+            clean_paragraphs.append(paragraph)
+            continue
+
+        # Short block (20–150 chars): discard only if it looks like junk
+        if _is_junk_line(paragraph):
+            continue
+
         clean_paragraphs.append(paragraph)
 
     return "\n\n".join(clean_paragraphs)
@@ -322,22 +331,50 @@ def _extract_article(entry, source_name: str) -> Optional[Dict]:
       1. Full article text via ``extract_text()`` (newspaper3k / …)
       2. RSS summary / description as fallback (marked ``is_summary``)
 
+    When extraction succeeds, the RSS summary is also merged into the
+    text to fill in any content the extraction may have missed (e.g.
+    introductory paragraphs that live outside the main content div, or
+    concluding sections that extraction libraries trim off).
+
     Returns ``None`` only when both strategies fail.
     """
     url = entry.get("link", "")
     if not url:
         return None
 
+    # Capture RSS summary early — may be merged into extracted text
+    rss_summary_raw = entry.get("summary", "") or entry.get("description", "")
+
     text = extract_text(url)
     is_summary = False
 
+    # ── Merge RSS summary with extracted text ────────────────────
+    # Many RSS feeds include the article's opening paragraphs in the
+    # summary.  Extraction libraries often miss these because they
+    # focus on the main <article> tag, especially when the first
+    # paragraph is outside that element.  Prepend the summary to fill
+    # the gap when it contains content not present in the extracted text.
+    if text and rss_summary_raw:
+        summary_clean = _strip_html(rss_summary_raw)
+        if len(summary_clean) >= 80:
+            # Use first 80 chars as a fingerprint to detect overlap
+            summary_prefix = summary_clean[:80].strip()
+            if summary_prefix and summary_prefix not in text:
+                merged = summary_clean + "\n\n" + text
+                merged_cleaned = _clean_text(merged)
+                if merged_cleaned and len(merged_cleaned) >= len(text):
+                    text = merged_cleaned
+                    logger.info(
+                        "  Merged RSS summary (%d chars) with extracted text for: %s",
+                        len(summary_clean), url[:60],
+                    )
+
     if not text:
         # Fallback: use RSS summary
-        summary = entry.get("summary", "") or entry.get("description", "")
-        if not summary:
+        if not rss_summary_raw:
             logger.debug("No summary available for: %s", url)
             return None
-        summary = _strip_html(summary)
+        summary = _strip_html(rss_summary_raw)
         if len(summary) < 50:
             logger.debug("RSS summary too short (%d chars): %s", len(summary), url)
             return None
