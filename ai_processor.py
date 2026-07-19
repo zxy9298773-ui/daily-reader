@@ -18,7 +18,6 @@ logger = logging.getLogger(__name__)
 _client = OpenAI(
     api_key=config.DEEPSEEK_API_KEY,
     base_url=config.DEEPSEEK_BASE_URL,
-    timeout=30,
 )
 
 DEFAULT_KWARGS = dict(
@@ -63,12 +62,12 @@ def process_article(article: Dict) -> Dict:
             continue
         # Collapse internal newlines into spaces
         p = re.sub(r"\s+", " ", p)
-        if len(p) >= 30:  # skip very short fragments
+        if len(p) >= 15:  # skip very short fragments
             paragraphs.append(p)
 
     # Fallback: if no double-newline paragraphs found, split by single newline
     if not paragraphs:
-        paragraphs = [p.strip() for p in text.split("\n") if len(p.strip()) >= 30]
+        paragraphs = [p.strip() for p in text.split("\n") if len(p.strip()) >= 15]
 
     translated_paragraphs = _translate_paragraphs(paragraphs)
     vocabulary = _extract_vocabulary(text)

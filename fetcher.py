@@ -8,6 +8,7 @@ from typing import List, Dict, Optional
 import logging
 
 import config
+from history import get_sent_urls
 
 logger = logging.getLogger(__name__)
 
@@ -55,8 +56,8 @@ def _is_junk_line(line: str) -> bool:
     stripped = line.strip()
     if not stripped:
         return True
-    # Very short lines (≤ 25 chars) without sentence-ending punctuation
-    if len(stripped) <= 25 and not stripped.rstrip().endswith((".", "!", "?", ":", "”", '"', "。")):
+    # Very short lines (≤ 15 chars) without sentence-ending punctuation
+    if len(stripped) <= 15 and not stripped.rstrip().endswith((".", "!", "?", ":", "”", '"', "。")):
         return True
     # Match junk patterns
     for pat in _JUNK_PATTERNS:
@@ -87,8 +88,10 @@ def _clean_text(raw: str) -> str:
         paragraph = " ".join(good_lines)
         # Remove extra whitespace
         paragraph = re.sub(r"\s+", " ", paragraph).strip()
-        if len(paragraph) >= 60:  # skip short fragments (real paragraphs are 100+)
-            clean_paragraphs.append(paragraph)
+        # No length filter — any paragraph with substantive content is kept.
+        # The _is_truncated() check at a higher level catches entire
+        # articles that are too short / junk-heavy.
+        clean_paragraphs.append(paragraph)
 
     return "\n\n".join(clean_paragraphs)
 
@@ -112,10 +115,11 @@ def _is_truncated(cleaned: str) -> bool:
         logger.debug("Article truncated: only %d chars after cleaning", len(cleaned))
         return True
 
-    # At least 50 % of paragraphs should be substantial (≥100 chars)
+    # At least 40 % of paragraphs should be substantial (≥100 chars)
+    # (lowered from 50% because _clean_text no longer filters short paragraphs)
     if paragraphs:
         substantial_ratio = len(long_paragraphs) / len(paragraphs)
-        if substantial_ratio < 0.5:
+        if substantial_ratio < 0.4:
             logger.debug(
                 "Article truncated: only %.0f%% of paragraphs are substantial (%d/%d)",
                 substantial_ratio * 100,
@@ -462,6 +466,15 @@ def fetch_articles(skip_urls: set[str] | None = None) -> List[Dict]:
                         len(articles), config.MAX_ARTICLES_TOTAL,
                         article["title"],
                     )
+
+    # ── Pass 3: 源端过滤已发送文章 ────────────────────────────────
+    sent_urls = get_sent_urls()
+    if sent_urls:
+        before = len(articles)
+        articles = [a for a in articles if a["url"] not in sent_urls]
+        filtered = before - len(articles)
+        if filtered:
+            logger.info("Source filter removed %d already-sent article(s)", filtered)
 
     if not articles:
         logger.warning("No articles could be extracted from any feed")
