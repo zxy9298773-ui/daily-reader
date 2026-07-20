@@ -174,6 +174,23 @@ def _translate_paragraphs(paragraphs: List[str]) -> List[Dict[str, str]]:
                         if global_idx in parsed:
                             parsed[global_idx]["translation"] = m.group(2)
 
+        # Final per-paragraph fallback for any still-missing translations
+        for i, para in enumerate(paragraphs):
+            idx = i + 1
+            entry = parsed.get(idx, {})
+            if not entry.get("translation"):
+                try:
+                    single_prompt = (
+                        f"把下面英文翻译成中文，只输出中文，不要任何多余内容：\n{para}"
+                    )
+                    single_system = "你是一个专业翻译。只输出中文翻译。"
+                    raw3 = _chat(single_prompt, single_system)
+                    trans = raw3.strip()
+                    if trans:
+                        parsed[idx]["translation"] = trans
+                except Exception:
+                    pass
+
         result = []
         for i, para in enumerate(paragraphs):
             idx = i + 1
@@ -197,141 +214,96 @@ def _translate_paragraphs(paragraphs: List[str]) -> List[Dict[str, str]]:
 # ---------------------------------------------------------------------------
 
 def _extract_vocabulary(paragraphs: List[str]) -> List[Dict[str, str]]:
-    """Extract vocabulary items from *paragraphs*, at least 2 per paragraph.
+    """Extract at least 2 vocabulary items per paragraph.
 
-    Builds a structured prompt with paragraph markers so the model
-    distributes words evenly across the article.
+    Iterates over each paragraph individually so every paragraph is
+    guaranteed to contribute at least 2 words.  Results are merged and
+    deduplicated by word text, capped at 40 items.
     """
-    # Build paragraph-annotated input (capped to avoid token overflow)
-    para_lines: list[str] = []
-    total_chars = 0
-    for i, p in enumerate(paragraphs):
-        prefix = f"[P{i + 1}] "
-        line = prefix + p
-        total_chars += len(line)
-        if total_chars > 5_500:
-            break
-        para_lines.append(line)
+    all_vocab: list[Dict[str, str]] = []
+    seen_words: set[str] = set()
 
-    num_paras = len(para_lines)
-    target_words = min(num_paras * 2, 40)
-
-    prompt = (
-        f"下面文章有 {num_paras} 段。从每一段中提取至少 2 个最有价值的单词，"
-        f"共提取约 {target_words} 个单词。分布要求：每段至少 2 个，不允许任何段为 0 个。\n\n"
-        f"文章段落：\n" + "\n".join(para_lines) + "\n\n"
-        f"对每个单词，按以下格式输出，每行一个词，用 | 分隔：\n"
-        f"单词 | 音标 | 词性(英文) | 中文释义 | 固定搭配(英文短语) | 固定搭配中文释义 | 英文例句 | 中文例句\n\n"
-        f"严格规则（按优先级排序）：\n"
-        f"1. 【最重要】禁止任何两个单词共用同一个英文例句。每个单词的英文例句必须是独一无二的，\n"
-        f"   即使原文中同一个句子包含多个目标单词，每个单词也只能使用该句子一次，其他单词必须换用不同的例句。\n"
-        f"2. 中文例句必须是英文例句的精确中文翻译，逐词对应，不能意译、不能自己编造不同内容。\n"
-        f"   例：\n"
-        f"     英文: Smartphones are prevalent among young people.\n"
-        f"     中文: 智能手机在年轻人中普遍存在。  ✅（精确翻译）\n"
-        f"     中文: 智能手机很流行。             ❌（意译，不精确）\n"
-        f"3. 英文例句可以来自原文完整句子，也可以是针对该单词自创的合理句子。\n"
-        f"   优先使用原文句子，但如果原文句子质量差或长度不合适，可以自创更自然、更清晰的例句。\n"
-        f"4. 所有例句必须是信息完整的句子（10-25个单词），不能是短语或片段。\n"
-        f"5. 【分布要求】输出时，不要求按段落顺序排列，但要确保最终列表涵盖所有段落。\n"
-        f"   即：每一段至少有 2 个单词被选中，整体分布均匀。\n\n"
-        f"每行必须有8列，顺序为：单词 | 音标 | 词性 | 中文释义 | 固定搭配英文 | 固定搭配中文 | 英文例句 | 中文例句"
+    per_para_prompt = (
+        "从下面这段英文中提取 2 个最有价值的单词。\n"
+        "对每个单词，按以下格式输出，每行一个词，用 | 分隔：\n"
+        "单词 | 音标 | 词性(英文) | 中文释义 | 固定搭配(英文短语) | "
+        "固定搭配中文释义 | 英文例句 | 中文例句\n\n"
+        "严格规则（按优先级排序）：\n"
+        "1. 英文例句必须完整（10-25个单词），不能是短语。\n"
+        "2. 中文例句必须是英文例句的精确中文翻译，逐词对应。\n"
+        "3. 单词、固定搭配、例句优先从原文中选取；如果原文没有合适的，可以自创合理内容。\n"
+        "4. 每行必须有8列，顺序为：单词 | 音标 | 词性 | 中文释义 | 固定搭配英文 | 固定搭配中文 | 英文例句 | 中文例句\n\n"
+        "待处理段落：\n{para}"
     )
-    system = (
-        "你是一个英语词汇老师。严格按照格式输出，每行一个单词，用 | 分隔字段。"
-        "每行必须有8列，顺序为：单词 | 音标 | 词性 | 中文释义 | 固定搭配英文 | 固定搭配中文 | 英文例句 | 中文例句。"
-        "中文例句必须是英文例句的精确中文翻译，不能编造不同内容。"
-        "绝对禁止两个单词共用同一个英文例句。"
-        "不要多余的文字。"
+    per_para_system = (
+        "你是一个英语词汇老师。每段提取 2 个单词。"
+        "严格按照格式输出，每行一个单词，用 | 分隔字段。"
+        "每行必须有8列。不要多余的文字。"
     )
 
-    for attempt in range(1 + _MAX_VOCAB_RETRIES):
-        raw = _chat(prompt, system)
-        lines = [line.strip() for line in raw.strip().split("\n") if line.strip()]
+    for para in paragraphs:
+        if len(para) < 30:
+            continue  # skip very short paragraphs
+        prompt = per_para_prompt.format(para=para)
 
-        vocab = []
-        for line in lines:
-            parts = line.split("|")
-            if len(parts) >= 8:
-                example_en = parts[6].strip()
-                example_cn = parts[7].strip()
-                # Build collocation with both en and cn for email display
-                colloc_en = parts[4].strip()
-                colloc_cn = parts[5].strip()
-                collocation = f"{colloc_en} {colloc_cn}" if colloc_en and colloc_cn else ""
-                vocab.append({
-                    "word": parts[0].strip(),
-                    "phonetic": parts[1].strip(),
-                    "pos": parts[2].strip(),
-                    "meaning": parts[3].strip(),
-                    "collocation": collocation,
-                    "collocation_en": colloc_en,
-                    "collocation_cn": colloc_cn,
-                    "example_en": example_en,
-                    "example_cn": example_cn,
-                })
-            elif len(parts) >= 6:
-                # Fallback for old 6-column format
-                vocab.append({
-                    "word": parts[0].strip(),
-                    "phonetic": parts[1].strip(),
-                    "pos": parts[2].strip(),
-                    "meaning": parts[3].strip(),
-                    "collocation": parts[4].strip(),
-                    "collocation_en": parts[4].strip(),
-                    "collocation_cn": "",
-                    "example_en": parts[5].strip(),
-                    "example_cn": "",
-                })
+        for attempt in range(1 + _MAX_VOCAB_RETRIES):
+            raw = _chat(prompt, per_para_system)
+            lines = [line.strip() for line in raw.strip().split("\n") if line.strip()]
+            local_vocab: list[Dict[str, str]] = []
 
-        if vocab:
-            # Dedup check: reject if any two vocab items share the same English example
-            seen_examples: set[str] = set()
-            has_dup = False
-            for v in vocab:
-                ex = v.get("example_en", "")
-                if ex in seen_examples:
-                    has_dup = True
-                    break
-                seen_examples.add(ex)
+            for line in lines:
+                parts = line.split("|")
+                if len(parts) >= 8:
+                    example_en = parts[6].strip()
+                    example_cn = parts[7].strip()
+                    colloc_en = parts[4].strip()
+                    colloc_cn = parts[5].strip()
+                    collocation = f"{colloc_en} {colloc_cn}" if colloc_en and colloc_cn else ""
+                    word = parts[0].strip()
+                    local_vocab.append({
+                        "word": word,
+                        "phonetic": parts[1].strip(),
+                        "pos": parts[2].strip(),
+                        "meaning": parts[3].strip(),
+                        "collocation": collocation,
+                        "collocation_en": colloc_en,
+                        "collocation_cn": colloc_cn,
+                        "example_en": example_en,
+                        "example_cn": example_cn,
+                    })
+                elif len(parts) >= 6:
+                    word = parts[0].strip()
+                    local_vocab.append({
+                        "word": word,
+                        "phonetic": parts[1].strip(),
+                        "pos": parts[2].strip(),
+                        "meaning": parts[3].strip(),
+                        "collocation": parts[4].strip(),
+                        "collocation_en": parts[4].strip(),
+                        "collocation_cn": "",
+                        "example_en": parts[5].strip(),
+                        "example_cn": "",
+                    })
 
-            if has_dup:
-                logger.warning(
-                    "Vocab has duplicate English examples (attempt %d/%d), retrying…",
-                    attempt + 1,
-                    1 + _MAX_VOCAB_RETRIES,
-                )
-                if attempt < _MAX_VOCAB_RETRIES:
-                    time.sleep(_RETRY_DELAY_S)
-                    continue
-                # Retries exhausted → deduplicate by keeping only the first
-                # occurrence of each unique English example
-                seen: set[str] = set()
-                deduped = []
-                for v in vocab:
-                    ex = v.get("example_en", "")
-                    if ex not in seen:
-                        seen.add(ex)
-                        deduped.append(v)
-                logger.warning(
-                    "Vocab dedup fallback: reduced %d → %d items",
-                    len(vocab),
-                    len(deduped),
-                )
-                return deduped[:40]
+            if local_vocab:
+                for v in local_vocab:
+                    w = v["word"].lower()
+                    if w not in seen_words:
+                        seen_words.add(w)
+                        all_vocab.append(v)
+                break  # success for this paragraph
 
-            return vocab[:40]
+            logger.warning(
+                "Per-para vocab attempt %d/%d failed for paragraph "
+                "(len=%d), retrying…",
+                attempt + 1,
+                1 + _MAX_VOCAB_RETRIES,
+                len(para),
+            )
+            if attempt < _MAX_VOCAB_RETRIES:
+                time.sleep(_RETRY_DELAY_S)
 
-        logger.warning(
-            "Vocabulary parsing produced 0 items (attempt %d/%d), retrying…",
-            attempt + 1,
-            1 + _MAX_VOCAB_RETRIES,
-        )
-        if attempt < _MAX_VOCAB_RETRIES:
-            time.sleep(_RETRY_DELAY_S)
-
-    logger.error("Vocabulary extraction failed after %d attempts", 1 + _MAX_VOCAB_RETRIES)
-    return []
+    return all_vocab[:40]
 
 
 # ---------------------------------------------------------------------------
