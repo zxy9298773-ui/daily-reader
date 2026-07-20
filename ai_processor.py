@@ -26,7 +26,7 @@ DEFAULT_KWARGS = dict(
     max_tokens=16384,
 )
 
-_MAX_RETRIES = 1          # for translation
+_MAX_RETRIES = 2          # for translation
 _MAX_VOCAB_RETRIES = 3   # for vocabulary (stricter dedup)
 _RETRY_DELAY_S = 1.0
 
@@ -70,7 +70,7 @@ def process_article(article: Dict) -> Dict:
         paragraphs = [p.strip() for p in text.split("\n") if len(p.strip()) >= 15]
 
     translated_paragraphs = _translate_paragraphs(paragraphs)
-    vocabulary = _extract_vocabulary(text)
+    vocabulary = _extract_vocabulary(paragraphs)
 
     return {
         **article,
@@ -147,8 +147,41 @@ def _translate_paragraphs(paragraphs: List[str]) -> List[Dict[str, str]]:
         if attempt < _MAX_RETRIES:
             time.sleep(_RETRY_DELAY_S)
     else:
-        logger.error("Translation failed after %d attempts", 1 + _MAX_RETRIES)
-        return [{"original": p, "translation": "[翻译生成失败]"} for p in paragraphs]
+        # One final attempt: translate only paragraphs still missing
+        missing = []
+        for i, para in enumerate(paragraphs):
+            idx = i + 1
+            entry = parsed.get(idx, {})
+            if not entry.get("translation"):
+                missing.append((i, para))
+        if missing:
+            local_input = "\n".join(
+                f"[{j + 1}] {p}" for j, (_, p) in enumerate(missing)
+            )
+            fix_prompt = (
+                f"将以下{len(missing)}段英文翻译成中文。"
+                f"对每段只输出：[序号] 中文翻译（不要原文）。\n\n{local_input}"
+            )
+            fix_system = "你是一个专业翻译。对每段只输出：[序号] 中文翻译。不要输出原文。"
+            raw2 = _chat(fix_prompt, fix_system)
+            for line in raw2.strip().split("\n"):
+                line = line.strip()
+                m = re.match(r'\[(\d+)\]\s*(.*)', line)
+                if m:
+                    local_idx = int(m.group(1)) - 1
+                    if 0 <= local_idx < len(missing):
+                        global_idx = missing[local_idx][0] + 1
+                        if global_idx in parsed:
+                            parsed[global_idx]["translation"] = m.group(2)
+
+        result = []
+        for i, para in enumerate(paragraphs):
+            idx = i + 1
+            entry = parsed.get(idx, {})
+            orig = entry.get("original", para)
+            trans = entry.get("translation", "") or ""
+            result.append({"original": orig, "translation": trans})
+        return result
 
     result = []
     for i, para in enumerate(paragraphs):
@@ -163,11 +196,31 @@ def _translate_paragraphs(paragraphs: List[str]) -> List[Dict[str, str]]:
 #  Vocabulary extraction  (pipe-delimited plain text)
 # ---------------------------------------------------------------------------
 
-def _extract_vocabulary(text: str) -> List[Dict[str, str]]:
-    """Extract vocabulary items from *text* (requests 22, returns up to 20)."""
+def _extract_vocabulary(paragraphs: List[str]) -> List[Dict[str, str]]:
+    """Extract vocabulary items from *paragraphs*, at least 2 per paragraph.
+
+    Builds a structured prompt with paragraph markers so the model
+    distributes words evenly across the article.
+    """
+    # Build paragraph-annotated input (capped to avoid token overflow)
+    para_lines: list[str] = []
+    total_chars = 0
+    for i, p in enumerate(paragraphs):
+        prefix = f"[P{i + 1}] "
+        line = prefix + p
+        total_chars += len(line)
+        if total_chars > 5_500:
+            break
+        para_lines.append(line)
+
+    num_paras = len(para_lines)
+    target_words = min(num_paras * 2, 40)
+
     prompt = (
-        f"从下面文章中提取 22 个最有价值的单词。"
-        f"对每个单词，按以下格式输出，每行一个词，用 | 分隔：\n\n"
+        f"下面文章有 {num_paras} 段。从每一段中提取至少 2 个最有价值的单词，"
+        f"共提取约 {target_words} 个单词。分布要求：每段至少 2 个，不允许任何段为 0 个。\n\n"
+        f"文章段落：\n" + "\n".join(para_lines) + "\n\n"
+        f"对每个单词，按以下格式输出，每行一个词，用 | 分隔：\n"
         f"单词 | 音标 | 词性(英文) | 中文释义 | 固定搭配(英文短语) | 固定搭配中文释义 | 英文例句 | 中文例句\n\n"
         f"严格规则（按优先级排序）：\n"
         f"1. 【最重要】禁止任何两个单词共用同一个英文例句。每个单词的英文例句必须是独一无二的，\n"
@@ -180,8 +233,9 @@ def _extract_vocabulary(text: str) -> List[Dict[str, str]]:
         f"3. 英文例句可以来自原文完整句子，也可以是针对该单词自创的合理句子。\n"
         f"   优先使用原文句子，但如果原文句子质量差或长度不合适，可以自创更自然、更清晰的例句。\n"
         f"4. 所有例句必须是信息完整的句子（10-25个单词），不能是短语或片段。\n"
-        f"5. 连续 10 个单词至少覆盖 5 种不同的主题场景（如科技、健康、教育、环境、社会、经济等）。\n\n"
-        f"文章：\n{text[:6000]}"
+        f"5. 【分布要求】输出时，不要求按段落顺序排列，但要确保最终列表涵盖所有段落。\n"
+        f"   即：每一段至少有 2 个单词被选中，整体分布均匀。\n\n"
+        f"每行必须有8列，顺序为：单词 | 音标 | 词性 | 中文释义 | 固定搭配英文 | 固定搭配中文 | 英文例句 | 中文例句"
     )
     system = (
         "你是一个英语词汇老师。严格按照格式输出，每行一个单词，用 | 分隔字段。"
@@ -264,9 +318,9 @@ def _extract_vocabulary(text: str) -> List[Dict[str, str]]:
                     len(vocab),
                     len(deduped),
                 )
-                return deduped[:20]
+                return deduped[:40]
 
-            return vocab[:20]
+            return vocab[:40]
 
         logger.warning(
             "Vocabulary parsing produced 0 items (attempt %d/%d), retrying…",

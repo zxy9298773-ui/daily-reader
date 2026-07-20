@@ -72,8 +72,7 @@ def build_email(articles: List[Dict], date_str: str = "") -> str:
 <tr><td align="center" style="padding:30px 15px;">
 
   <!-- ─────────── outer container ─────────── -->
-  <!-- 🔧 修改 4：去掉 overflow:hidden，避免邮件客户端裁剪链接点击区域 -->
-  <table width="640" cellpadding="0" cellspacing="0" style="max-width:640px;background-color:{BG_CARD};border-radius:12px;box-shadow:0 1px 4px rgba(0,0,0,.04);">
+  <table width="640" cellpadding="0" cellspacing="0" style="max-width:640px;background-color:{BG_CARD};border-radius:12px;overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,.04);">
 
     <!-- header -->
     <tr><td style="padding:36px 40px 20px;border-bottom:1px solid {BORDER_LIGHT};">
@@ -162,9 +161,7 @@ def build_empty_email(date_str: str = "") -> str:
 
 def _article_section(article: Dict) -> str:
     title = _esc(article.get("title", ""))
-    # 🔧 修改 2：用 _url_esc 替代 _esc，保留 & 不变
-    raw_url = article.get("url") or ""
-    url = _url_esc(raw_url)
+    url = _esc(article.get("url", ""))
     source = _esc(article.get("source", ""))
     author = ", ".join(article.get("author", [])) if article.get("author") else ""
 
@@ -177,10 +174,8 @@ def _article_section(article: Dict) -> str:
         # ── Link-list: show clickable titles from all feeds ──
         links = article.get("link_entries", [])
         links_html = "".join(
-            # 🔧 修改 1+3：用 _url_esc + target="_blank"
             f'<tr><td style="padding:6px 0;font-size:14px;line-height:1.5;">'
-            f'<a href="{_url_esc(link["url"])}" '
-            f'target="_blank" rel="noopener noreferrer" '
+            f'<a href="{_esc(link["url"])}" '
             f'style="color:{ACCENT_GREEN};text-decoration:none;font-family:{FONT_EN};">'
             f'{_esc(link["title"])}</a></td></tr>'
             for link in links
@@ -216,9 +211,7 @@ def _article_section(article: Dict) -> str:
     <!-- ── article (summary): {title} ── -->
     <tr><td style="padding:32px 40px 4px;">
       <h2 style="margin:0;font-size:20px;font-weight:700;color:{TEXT_PRIMARY};line-height:1.3;font-family:Georgia,'Times New Roman',Times,serif;">
-        <!-- 🔧 修改 3：加 target="_blank" -->
-        <a href="{url}" target="_blank" rel="noopener noreferrer"
-           style="color:{TEXT_PRIMARY};text-decoration:none;">{title}</a>
+        <a href="{url}" style="color:{TEXT_PRIMARY};text-decoration:none;">{title}</a>
       </h2>
       <p style="margin:6px 0 0;font-size:12px;color:{TEXT_META};">{source}{" · " + author if author else ""}</p>
     </td></tr>
@@ -230,9 +223,8 @@ def _article_section(article: Dict) -> str:
     <tr><td style="padding:0 40px 32px;">
       <table cellpadding="0" cellspacing="0" style="margin:0;">
         <tr>
-          <!-- 🔧 修改 3：加 target="_blank" -->
           <td style="background:{BTN_GREEN};border-radius:6px;text-align:center;">
-            <a href="{url}" target="_blank" rel="noopener noreferrer"
+            <a href="{url}"
                style="display:inline-block;padding:10px 24px;font-size:14px;font-weight:600;color:#fff;text-decoration:none;font-family:{FONT_CN};">
               Read full article on {source} →
             </a>
@@ -261,11 +253,11 @@ def _article_section(article: Dict) -> str:
 
         paragraphs_html += f"""
             <p style="margin:0 0 16px;font-size:15px;line-height:1.7;color:{TEXT_BODY};font-family:Georgia,'Times New Roman',Times,serif;">{highlighted}</p>
-            <p style="margin:-12px 0 20px;font-size:14px;line-height:1.6;color:#999;font-style:italic;">{trans}</p>"""
+            <p style="margin:-12px 0 20px;font-size:14px;line-height:1.6;color:#999;font-family:{FONT_CN};">{trans}</p>"""
 
     # ── right column: vocabulary cards ─────────────────────────────
     vocab_html = ""
-    for v in vocabulary[:20]:
+    for v in vocabulary[:40]:
         word = _esc(v.get("word", ""))
         phonetic = _esc(v.get("phonetic", ""))
         pos = _esc(v.get("pos", "") or v.get("part_of_speech", ""))
@@ -307,9 +299,7 @@ def _article_section(article: Dict) -> str:
     <!-- ── article: {title} ── -->
     <tr><td style="padding:32px 40px 4px;">
       <h2 style="margin:0;font-size:20px;font-weight:700;color:{TEXT_PRIMARY};line-height:1.3;font-family:Georgia,'Times New Roman',Times,serif;">
-        <!-- 🔧 修改 3：加 target="_blank" -->
-        <a href="{url}" target="_blank" rel="noopener noreferrer"
-           style="color:{TEXT_PRIMARY};text-decoration:none;">{title}</a>
+        <a href="{url}" style="color:{TEXT_PRIMARY};text-decoration:none;">{title}</a>
       </h2>
       <p style="margin:6px 0 0;font-size:12px;color:{TEXT_META};">{source}{" · " + author if author else ""}</p>
     </td></tr>
@@ -344,22 +334,6 @@ def _esc(text: str) -> str:
     if not text:
         return ""
     return html_mod.escape(str(text), quote=True)
-
-
-# 🔧 修改 1：新增 URL 专用转义函数
-def _url_esc(url: str) -> str:
-    """Prepare a URL for href attribute — preserves & as-is.
-
-    Standard html.escape() converts & to &amp;, which breaks link
-    parameters in QQ mail, 163 mail, Outlook for Windows, and Gmail.
-    We keep & unescaped, which is universally supported by mail clients.
-    """
-    if not url:
-        return ""
-    url = str(url)
-    # Only guard against characters that would break the HTML attribute
-    url = url.replace('"', '%22')
-    return url
 
 
 def _highlight(text: str, vocabulary: List[Dict]) -> str:
