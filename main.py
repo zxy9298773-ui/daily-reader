@@ -5,20 +5,13 @@ optionally send a beautiful HTML newsletter via email.
 
 Usage
 -----
-python main.py               # dry-run: print to console
-python main.py --send        # actually send email
-python main.py --server      # run as HTTP server (for Railway Cron)
-
-Railway Cron 设置:
-  Base URL:  https://你的项目.up.railway.app/cron/trigger
-  Cron Timer: 0 1 * * *      (UTC 1:00 = 北京 9:00)
+    python main.py               # dry-run: print to console
+    python main.py --send        # actually send email
 """
 import argparse
 import logging
 import sys
-import os
 from datetime import date
-from flask import Flask
 
 import config
 from fetcher import fetch_articles
@@ -26,7 +19,7 @@ from ai_processor import process_article
 from email_builder import build_email, build_empty_email
 from sender import send_email, _print_to_console
 from cleanup import cleanup_old_emails
-from history import get_sent_urls, mark_all_sent
+from history import get_sent_urls, mark_all_sent, mark_sources_pushed
 
 logging.basicConfig(
     level=logging.INFO,
@@ -35,17 +28,24 @@ logging.basicConfig(
 )
 logger = logging.getLogger("daily-reader")
 
-app = Flask(__name__)
 
+def main():
+    parser = argparse.ArgumentParser(
+        description="Daily Reader – translate articles & learn vocabulary"
+    )
+    parser.add_argument(
+        "--send",
+        action="store_true",
+        help="Really send the email (default: dry-run to console)",
+    )
+    args = parser.parse_args()
 
-# ── 核心逻辑抽出来 ─────────────────────────────────────────────
-def run_pipeline(send_mode: bool = False):
-    """Run the full fetch → process → build → send pipeline."""
     # ── 1. Fetch ───────────────────────────────────────────────────
     logger.info("=" * 48)
     logger.info("  Step 1/4 — Fetching articles from RSS feeds")
     logger.info("=" * 48)
 
+    # Load previously sent URLs so we don't repeat articles
     sent_urls = get_sent_urls()
     if sent_urls:
         logger.info("Found %d previously sent article(s) in history", len(sent_urls))
@@ -58,11 +58,11 @@ def run_pipeline(send_mode: bool = False):
         today_str = date.today().strftime("%Y-%m-%d")
         subject = f"Daily Reader — {today_str} — 暂无新文章"
         html = build_empty_email(today_str)
-        if send_mode:
+        if args.send:
             send_email(subject, html)
         else:
             _print_to_console(subject, html)
-        return
+        sys.exit(0)
 
     # ── 2. Process with DeepSeek ──────────────────────────────────
     logger.info("=" * 48)
@@ -84,13 +84,13 @@ def run_pipeline(send_mode: bool = False):
         today_str = date.today().strftime("%Y-%m-%d")
         subject = f"Daily Reader — {today_str} — 暂无新文章"
         html = build_empty_email(today_str)
-        if send_mode:
+        if args.send:
             send_email(subject, html)
         else:
             _print_to_console(subject, html)
-        return
+        sys.exit(0)
 
-    # ── 2.5 二次过滤 ─────────────────────────────────────────────
+    # ── 2.5 二次过滤：发送前再检查一遍已发送记录 ────────────────
     sent_urls = get_sent_urls()
     if sent_urls:
         before = len(processed)
@@ -104,12 +104,12 @@ def run_pipeline(send_mode: bool = False):
         today_str = date.today().strftime("%Y-%m-%d")
         subject = f"Daily Reader — {today_str} — 暂无新文章"
         html = build_empty_email(today_str)
-        if send_mode:
+        if args.send:
             send_email(subject, html)
             cleanup_old_emails()
         else:
             _print_to_console(subject, html)
-        return
+        sys.exit(0)
 
     # ── 3. Build email ────────────────────────────────────────────
     logger.info("=" * 48)
@@ -124,8 +124,8 @@ def run_pipeline(send_mode: bool = False):
         subject = f"Daily Reader — {today_str} — {first['source']} & more"
     html = build_email(processed, date_str=today_str)
 
-    # ── 4. Send ────────────────────────────────────────────────────
-    if send_mode:
+    # ── 4. Send (or print) ────────────────────────────────────────
+    if args.send:
         logger.info("=" * 48)
         logger.info("  Step 4/4 — Sending email")
         logger.info("=" * 48)
@@ -134,7 +134,10 @@ def run_pipeline(send_mode: bool = False):
             logger.info("  Cleanup — deleting emails ≥%d days old", config.CLEANUP_AFTER_DAYS)
             logger.info("=" * 48)
             cleanup_old_emails()
+            # Record sent URLs so they won't repeat tomorrow
             mark_all_sent([a["url"] for a in articles])
+            # Record source rotation so every source gets a turn
+            mark_sources_pushed([a["source"] for a in articles], today_str)
     else:
         logger.info("=" * 48)
         logger.info("  Step 4/4 — Dry-run (use --send to actually mail)")
@@ -142,57 +145,6 @@ def run_pipeline(send_mode: bool = False):
         _print_to_console(subject, html)
 
     logger.info("Done.")
-
-
-# ── HTTP 接口（给 Railway Cron 用）─────────────────────────────
-import threading  # 如果文件顶部没有，加这一行
-
-@app.route("/cron/trigger")
-def cron_trigger():
-    """Railway Cron 定时访问这个地址，触发发邮件"""
-    logger.info("🔥【定时任务触发】开始执行完整流程...")
-    # 在后台线程执行，不阻塞 HTTP 请求
-    thread = threading.Thread(target=run_pipeline, kwargs={"send_mode": True})
-    thread.daemon = True
-    thread.start()
-    return "OK - 任务已启动", 200
-
-@app.route("/health")
-def health():
-    """健康检查"""
-    return "OK", 200
-
-
-# ── 入口 ─────────────────────────────────────────────────────────
-def main():
-    parser = argparse.ArgumentParser(
-        description="Daily Reader – translate articles & learn vocabulary"
-    )
-    parser.add_argument(
-        "--send",
-        action="store_true",
-        help="Really send the email (default: dry-run to console)",
-    )
-    parser.add_argument(
-        "--server",
-        action="store_true",
-        help="Run as HTTP server for Railway",
-    )
-    parser.add_argument(
-        "--port",
-        type=int,
-        default=int(os.getenv("PORT", 8080)),
-        help="Port for HTTP server (default: $PORT or 8080)",
-    )
-    args = parser.parse_args()
-
-    if args.server:
-        # 🚀 Railway 模式：启动 Web 服务，等 Cron 来触发
-        logger.info("🚀 启动 HTTP 服务，端口 %d ...", args.port)
-        app.run(host="0.0.0.0", port=args.port)
-    else:
-        # 💻 本地模式：直接运行一次
-        run_pipeline(send_mode=args.send)
 
 
 if __name__ == "__main__":

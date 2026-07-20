@@ -35,6 +35,11 @@ RSS_FEEDS: List[Dict[str, str]] = [
     {"name": "BBC News",              "url": "https://feeds.bbci.co.uk/news/rss.xml"},
     {"name": "New Scientist",         "url": "https://www.newscientist.com/feed/home"},
     {"name": "Phys.org",              "url": "https://phys.org/rss-feed/"},
+    {"name": "The Marginalian",      "url": "https://www.themarginalian.org/feed/"},
+    {"name": "Aeon Magazine",        "url": "https://aeon.co/feed.rss"},
+    {"name": "Literary Hub",         "url": "https://lithub.com/feed/"},
+    {"name": "Electric Literature",  "url": "https://electricliterature.com/feed/"},
+    {"name": "Space.com",            "url": "https://www.space.com/feeds/all"},
 ]
 
 # ---------------------------------------------------------------------------

@@ -1,14 +1,16 @@
 """
-History — JSON-backed tracking of already-sent article URLs.
+History — JSON-backed tracking of already-sent article URLs and source
+rotation fairness.
 
-Ensures the same article is never pushed twice across days.
-The JSON file is committed to the repo so it persists across
+Ensures the same article is never pushed twice across days, and that
+every source gets pushed at least once per week.
+The JSON files are committed to the repo so they persist across
 GitHub Actions runs.
 """
 import json
 import logging
 import os
-from typing import List, Set
+from typing import List, Set, Dict
 
 logger = logging.getLogger(__name__)
 
@@ -66,3 +68,64 @@ def mark_all_sent(urls: List[str]) -> None:
         logger.info("Recorded %d new article(s) as sent", len(new_urls))
     else:
         logger.info("All %d article(s) already recorded", len(urls))
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  Source rotation tracking  (ensures every source is served ≥1×/week)
+# ═══════════════════════════════════════════════════════════════════
+
+_ROTATION_PATH = os.path.join(os.path.dirname(__file__), "..", "source_rotation.json")
+
+
+def _load_rotation() -> Dict[str, str]:
+    """Load the {source_name: last_push_date} mapping."""
+    if not os.path.exists(_ROTATION_PATH):
+        return {}
+    try:
+        with open(_ROTATION_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            if isinstance(data, dict):
+                return data
+            return {}
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def _save_rotation(data: Dict[str, str]) -> None:
+    """Write the rotation mapping to disk."""
+    try:
+        with open(_ROTATION_PATH, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        logger.debug("Saved rotation data (%d source(s))", len(data))
+    except OSError:
+        logger.exception("Failed to write source_rotation.json")
+
+
+def get_source_last_seen() -> Dict[str, str]:
+    """Return {source_name: last_push_date_string}.
+
+    Sources that have never been pushed are not present in the dict,
+    meaning they are immediately eligible for rotation priority.
+    """
+    return _load_rotation()
+
+
+def mark_sources_pushed(sources: List[str], date_str: str) -> None:
+    """Record that *sources* were pushed on *date_str* (expects YYYY-MM-DD).
+
+    Only non-empty source names are recorded (link-list fallback and
+    similar edge cases are ignored).
+    """
+    if not sources:
+        return
+    data = _load_rotation()
+    changed = False
+    for s in sources:
+        if not s:
+            continue
+        if data.get(s) != date_str:
+            data[s] = date_str
+            changed = True
+    if changed:
+        _save_rotation(data)
+        logger.info("Updated rotation for %d source(s): %s", len(sources), date_str)

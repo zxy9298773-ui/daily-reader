@@ -3,12 +3,13 @@ Fetch articles from configured RSS feeds using feedparser + multi-strategy extra
 Skips articles that are too short (likely paywalled or broken).
 """
 import re
+from datetime import date
 import feedparser
 from typing import List, Dict, Optional
 import logging
 
 import config
-from history import get_sent_urls
+from history import get_sent_urls, get_source_last_seen
 
 logger = logging.getLogger(__name__)
 
@@ -502,9 +503,23 @@ def fetch_articles(skip_urls: set[str] | None = None) -> List[Dict]:
         return []
 
     # ── Pass 1: diversity — collect ≤1 per feed from ALL feeds ────
-    # Collect candidates from every feed first, then select the best.
+    # For each feed, find the best article (for "due" sources, scan all
+    # entries; for recently-pushed sources, first success is enough).
+    today = date.today()
+    source_last_seen = get_source_last_seen()
+
+    def _is_source_due(source_name: str) -> bool:
+        last_str = source_last_seen.get(source_name, "")
+        if not last_str:
+            return True  # never pushed → due
+        try:
+            return (today - date.fromisoformat(last_str)).days >= 7
+        except Exception:
+            return True
+
     all_candidates: List[Dict] = []
     for bucket in feed_buckets:
+        feed_candidates: list[tuple[str, Dict]] = []  # (url, article)
         for entry in bucket["entries"]:
             url = entry.get("link", "")
             if not url or url in skip_urls or url in used_urls:
@@ -512,24 +527,39 @@ def fetch_articles(skip_urls: set[str] | None = None) -> List[Dict]:
 
             article = _extract_article(entry, bucket["name"])
             if article:
-                all_candidates.append(article)
+                feed_candidates.append((url, article))
                 used_urls.add(url)
-                logger.info(
-                    "  [diversity] candidate from %s: %s",
-                    bucket["name"], article["title"],
-                )
-                break  # max 1 per feed in pass 1
+                if not _is_source_due(bucket["name"]):
+                    break  # non-due: first success is enough
             else:
-                failed_urls.add(url)  # don't retry in pass 2
+                failed_urls.add(url)
 
-    # Sort by quality: full articles first, then by text length descending
+        if feed_candidates:
+            # Pick the best article from this feed
+            feed_candidates.sort(
+                key=lambda x: (0 if not x[1].get("is_summary") else 1, -len(x[1].get("text", ""))),
+            )
+            chosen_url, chosen = feed_candidates[0]
+            all_candidates.append(chosen)
+            # Release unused URLs from this feed back for Pass 2
+            for url, _ in feed_candidates[1:]:
+                used_urls.discard(url)
+            logger.info(
+                "  [diversity] candidate from %s: %s%s",
+                bucket["name"], chosen["title"],
+                f" (best of {len(feed_candidates)})" if len(feed_candidates) > 1 else "",
+            )
+
+    # ── Sort: rotation fairness → quality ─────────────────────────
     all_candidates.sort(
-        key=lambda a: (0 if not a.get("is_summary") else 1, -len(a.get("text", ""))),
+        key=lambda a: (0 if not _is_source_due(a.get("source", "")) else 1,
+                       0 if not a.get("is_summary") else 1,
+                       -len(a.get("text", ""))),
     )
     articles = all_candidates[:config.MAX_ARTICLES_TOTAL]
     if all_candidates:
         logger.info(
-            "  [diversity] collected %d candidate(s), selected top %d by quality",
+            "  [diversity] collected %d candidate(s), selected top %d by rotation+quality",
             len(all_candidates), len(articles),
         )
 
