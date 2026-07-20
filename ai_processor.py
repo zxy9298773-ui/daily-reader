@@ -5,12 +5,20 @@ Handles translation and vocabulary extraction for each article.
 import logging
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import List, Dict, Any
 
 from openai import OpenAI
 import config
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Input/output length safety guards  (must be defined before DEFAULT_KWARGS)
+# ---------------------------------------------------------------------------
+_MAX_TRANSLATION_INPUT_CHARS = 30000   # max chars of paragraph text sent per batch for translation
+_MAX_VOCAB_INPUT_CHARS = 30000        # max chars of paragraph text sent for vocab extraction
+_MAX_OUTPUT_TOKENS = 8192             # DeepSeek models cap output at 8K tokens server-side
 
 # ---------------------------------------------------------------------------
 # Shared DeepSeek client
@@ -23,12 +31,35 @@ _client = OpenAI(
 DEFAULT_KWARGS = dict(
     model=config.DEEPSEEK_MODEL,
     temperature=0.3,
-    max_tokens=16384,
+    max_tokens=_MAX_OUTPUT_TOKENS,
 )
 
 _MAX_RETRIES = 1          # for translation
 _MAX_VOCAB_RETRIES = 3   # for vocabulary (stricter dedup)
 _RETRY_DELAY_S = 1.0
+
+
+def _truncate_paragraphs(paragraphs: list[str], max_chars: int) -> list[str]:
+    """Drop paragraphs from the end until total length fits *max_chars*.
+
+    Always keeps at least 1 paragraph.  Returns the truncated list.
+    If a single paragraph exceeds *max_chars*, it is hard-truncated.
+    """
+    total = sum(len(p) for p in paragraphs)
+    if total <= max_chars:
+        return paragraphs
+    truncated = list(paragraphs)
+    while len(truncated) > 1 and sum(len(p) for p in truncated) > max_chars:
+        truncated.pop()
+    # Hard-truncate the last (and only) paragraph if it's still too long
+    if truncated and sum(len(p) for p in truncated) > max_chars:
+        truncated[0] = truncated[0][:max_chars]
+    logger.warning(
+        "Truncated %d paragraphs to %d (%.0f%% of original length)",
+        len(paragraphs), len(truncated),
+        sum(len(p) for p in truncated) / total * 100,
+    )
+    return truncated
 
 
 def process_article(article: Dict) -> Dict:
@@ -69,8 +100,14 @@ def process_article(article: Dict) -> Dict:
     if not paragraphs:
         paragraphs = [p.strip() for p in text.split("\n") if len(p.strip()) >= 15]
 
-    translated_paragraphs = _translate_paragraphs(paragraphs)
-    vocabulary = _extract_vocabulary(paragraphs)
+    # ── Translate + extract vocabulary in parallel ────────────────
+    # The two tasks are I/O-bound (DeepSeek API calls), so threading
+    # cuts wall-clock time roughly in half.
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        trans_future = executor.submit(_translate_paragraphs, paragraphs)
+        vocab_future = executor.submit(_extract_vocabulary, paragraphs)
+        translated_paragraphs = trans_future.result()
+        vocabulary = vocab_future.result()
 
     return {
         **article,
@@ -86,9 +123,10 @@ def process_article(article: Dict) -> Dict:
 def _translate_paragraphs(paragraphs: List[str]) -> List[Dict[str, str]]:
     """Translate every paragraph into Chinese (one-to-one).
 
-    Sends paragraphs with explicit [N] markers so the AI must respond
-    with the same numbering — this guarantees strict 1:1 alignment
-    between original and translation.
+    Sends paragraphs in small batches so each API call's output stays
+    well within the model's output token limit (~8K for DeepSeek).
+
+    Each batch uses explicit [N] markers for 1:1 alignment.
     """
     if not paragraphs:
         return []
@@ -102,76 +140,93 @@ def _translate_paragraphs(paragraphs: List[str]) -> List[Dict[str, str]]:
             merged.append(p)
     paragraphs = merged
 
-    numbered_input = "\n".join(
-        f"[{i + 1}] {p}" for i, p in enumerate(paragraphs)
-    )
-    prompt = (
+    # ── Truncate if total input is too long ────────────────────────
+    paragraphs = _truncate_paragraphs(paragraphs, _MAX_TRANSLATION_INPUT_CHARS)
+
+    # ── Batch translate ───────────────────────────────────────────
+    # Each paragraph pair (original + translation) needs ~450 output
+    # tokens.  Batching ≤10 paragraphs keeps output within 8K.
+    _BATCH_SIZE = 10
+    parsed: Dict[int, Dict[str, str]] = {}
+    prompt_template = (
         "请将以下各段英文逐段翻译成中文。\n"
         "对每一段，先原样输出原文（以[序号]开头），再输出对应的中文翻译。\n"
-        f"格式示例：\n"
-        f"[1] Original text...\n"
-        f"[1] 中文翻译...\n"
-        f"\n"
-        f"待翻译内容：\n{numbered_input}"
+        "格式示例：\n"
+        "[1] Original text...\n"
+        "[1] 中文翻译...\n"
+        "\n"
+        "待翻译内容：\n{}"
     )
     system = (
         "你是一个专业翻译。严格按照格式输出：[序号] 原文 和 [序号] 翻译，"
         "每个[序号]一行。原文必须原样保留，不得修改。"
     )
 
-    for attempt in range(1 + _MAX_RETRIES):
-        raw = _chat(prompt, system)
-        lines = [line.strip() for line in raw.strip().split("\n") if line.strip()]
+    for batch_start in range(0, len(paragraphs), _BATCH_SIZE):
+        batch = paragraphs[batch_start:batch_start + _BATCH_SIZE]
+        numbered_input = "\n".join(
+            f"[{i + 1}] {p}" for i, p in enumerate(batch)
+        )
+        prompt = prompt_template.format(numbered_input)
 
-        # Parse lines into a dict: {idx: {"original": ..., "translation": ...}}
-        parsed: Dict[int, Dict[str, str]] = {}
-        for line in lines:
-            m = re.match(r'\[(\d+)\]\s*(.*)', line)
-            if m:
-                idx = int(m.group(1))
+        batch_parsed: Dict[int, Dict[str, str]] = {}
+        for attempt in range(1 + _MAX_RETRIES):
+            raw = _chat(prompt, system)
+            lines = [line.strip() for line in raw.strip().split("\n") if line.strip()]
+
+            # Parse lines into batch_parsed keyed by global 1‑based index
+            for line in lines:
+                m = re.match(r'\[(\d+)\]\s*(.*)', line)
+                if not m:
+                    continue
+                local_idx = int(m.group(1))               # 1‑based within batch
+                global_idx = batch_start + local_idx       # 1‑based global
                 text = m.group(2)
-                if idx not in parsed:
-                    parsed[idx] = {}
-                # Decide whether it's original or translation by checking
-                # whether it contains mostly ASCII characters
+                if global_idx not in batch_parsed:
+                    batch_parsed[global_idx] = {}
                 ascii_ratio = sum(1 for c in text if ord(c) < 128) / max(len(text), 1)
                 if ascii_ratio > 0.7:
-                    parsed[idx]["original"] = text
+                    batch_parsed[global_idx]["original"] = text
                 else:
-                    parsed[idx]["translation"] = text
+                    batch_parsed[global_idx]["translation"] = text
 
-        # Each paragraph must have BOTH an original AND a translation
-        if len(parsed) >= len(paragraphs) and all(
-            len(v) >= 2 for v in parsed.values()
-        ):
-            break
+            # Verify this batch is complete
+            expected_in_batch = len(batch)
+            batch_ok = len(batch_parsed) >= expected_in_batch and all(
+                len(v) >= 2 for v in batch_parsed.values()
+            )
+            if batch_ok:
+                break
 
-        logger.warning(
-            "Translation parsed %d blocks, expected %d (attempt %d/%d), retrying…",
-            len(parsed),
-            len(paragraphs),
-            attempt + 1,
-            1 + _MAX_RETRIES,
+            logger.warning(
+                "Batch [%d-%d] parsed %d/%d blocks (attempt %d/%d)",
+                batch_start + 1, batch_start + len(batch),
+                len(batch_parsed), expected_in_batch,
+                attempt + 1, 1 + _MAX_RETRIES,
+            )
+            if attempt < _MAX_RETRIES:
+                time.sleep(_RETRY_DELAY_S)
+
+        parsed.update(batch_parsed)
+
+    # ── One final attempt: translate only paragraphs still missing ─
+    missing = []
+    for i, para in enumerate(paragraphs):
+        idx = i + 1
+        entry = parsed.get(idx, {})
+        if not entry.get("translation"):
+            missing.append((i, para))
+
+    if missing:
+        local_input = "\n".join(
+            f"[{j + 1}] {p}" for j, (_, p) in enumerate(missing)
         )
-        if attempt < _MAX_RETRIES:
-            time.sleep(_RETRY_DELAY_S)
-    else:
-        # One final attempt: translate only paragraphs still missing
-        missing = []
-        for i, para in enumerate(paragraphs):
-            idx = i + 1
-            entry = parsed.get(idx, {})
-            if not entry.get("translation"):
-                missing.append((i, para))
-        if missing:
-            local_input = "\n".join(
-                f"[{j + 1}] {p}" for j, (_, p) in enumerate(missing)
-            )
-            fix_prompt = (
-                f"将以下{len(missing)}段英文翻译成中文。"
-                f"对每段只输出：[序号] 中文翻译（不要原文）。\n\n{local_input}"
-            )
-            fix_system = "你是一个专业翻译。对每段只输出：[序号] 中文翻译。不要输出原文。"
+        fix_prompt = (
+            f"将以下{len(missing)}段英文翻译成中文。"
+            f"对每段只输出：[序号] 中文翻译（不要原文）。\n\n{local_input}"
+        )
+        fix_system = "你是一个专业翻译。对每段只输出：[序号] 中文翻译。不要输出原文。"
+        try:
             raw2 = _chat(fix_prompt, fix_system)
             for line in raw2.strip().split("\n"):
                 line = line.strip()
@@ -182,39 +237,34 @@ def _translate_paragraphs(paragraphs: List[str]) -> List[Dict[str, str]]:
                         global_idx = missing[local_idx][0] + 1
                         if global_idx in parsed:
                             parsed[global_idx]["translation"] = m.group(2)
+        except Exception:
+            pass
 
-        # Final per-paragraph fallback for any still-missing translations
-        for i, para in enumerate(paragraphs):
-            idx = i + 1
-            entry = parsed.get(idx, {})
-            if not entry.get("translation"):
-                try:
-                    single_prompt = (
-                        f"把下面英文翻译成中文，只输出中文，不要任何多余内容：\n{para}"
-                    )
-                    single_system = "你是一个专业翻译。只输出中文翻译。"
-                    raw3 = _chat(single_prompt, single_system)
-                    trans = raw3.strip()
-                    if trans:
-                        parsed[idx]["translation"] = trans
-                except Exception:
-                    pass
+    # ── Final per-paragraph fallback for any still missing ────────
+    for i, para in enumerate(paragraphs):
+        idx = i + 1
+        entry = parsed.get(idx, {})
+        if not entry.get("translation"):
+            try:
+                single_prompt = (
+                    f"把下面英文翻译成中文，只输出中文，不要任何多余内容：\n{para}"
+                )
+                single_system = "你是一个专业翻译。只输出中文翻译。"
+                raw3 = _chat(single_prompt, single_system)
+                trans = raw3.strip()
+                if trans:
+                    parsed[idx]["translation"] = trans
+            except Exception:
+                pass
 
-        result = []
-        for i, para in enumerate(paragraphs):
-            idx = i + 1
-            entry = parsed.get(idx, {})
-            orig = entry.get("original", para)
-            trans = entry.get("translation", "") or ""
-            result.append({"original": orig, "translation": trans})
-        return result
-
+    # ── Build result ──────────────────────────────────────────────
     result = []
     for i, para in enumerate(paragraphs):
         idx = i + 1
         entry = parsed.get(idx, {})
-        trans = entry.get("translation", "[翻译失败]")
-        result.append({"original": para, "translation": trans})
+        orig = entry.get("original", para)
+        trans = entry.get("translation", "") or ""
+        result.append({"original": orig, "translation": trans})
     return result
 
 
@@ -295,6 +345,19 @@ def _extract_vocabulary(paragraphs: List[str]) -> List[Dict[str, str]]:
 
     if not selected:
         return []
+
+    # ── Truncate selected paragraphs if total input is too long ────
+    total_selected = sum(len(t[1]) for t in selected)
+    if total_selected > _MAX_VOCAB_INPUT_CHARS:
+        truncated = list(selected)
+        while len(truncated) > 1 and sum(len(t[1]) for t in truncated) > _MAX_VOCAB_INPUT_CHARS:
+            truncated.pop()
+        logger.warning(
+            "Vocab bulk input truncated: %d paragraphs → %d (%.0f%% of original length)",
+            len(selected), len(truncated),
+            sum(len(t[1]) for t in truncated) / total_selected * 100,
+        )
+        selected = truncated
 
     all_para_indices = [idx for idx, _ in selected]
 
@@ -388,12 +451,33 @@ def _extract_vocabulary(paragraphs: List[str]) -> List[Dict[str, str]]:
 # ---------------------------------------------------------------------------
 
 def _chat(prompt: str, system: str) -> str:
-    """Low-level DeepSeek chat call – returns raw content string."""
-    resp = _client.chat.completions.create(
-        **DEFAULT_KWARGS,
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": prompt},
-        ],
-    )
-    return resp.choices[0].message.content or ""
+    """Low-level DeepSeek chat call – returns raw content string.
+
+    Raises ``RuntimeError`` on API failure with the underlying error
+    message attached.
+    """
+    # Estimate whether prompt is too long (rough: 1 token ≈ 4 chars)
+    estimated_prompt_tokens = (len(system) + len(prompt)) // 4
+    if estimated_prompt_tokens > 48000:
+        logger.warning(
+            "Prompt is very large (~%d tokens), may exceed context window",
+            estimated_prompt_tokens,
+        )
+
+    try:
+        resp = _client.chat.completions.create(
+            **DEFAULT_KWARGS,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": prompt},
+            ],
+        )
+    except Exception as e:
+        err_msg = str(e)
+        logger.error("DeepSeek API call failed: %s", err_msg)
+        raise RuntimeError(f"DeepSeek API error: {err_msg}") from e
+
+    content = resp.choices[0].message.content or ""
+    if not content:
+        logger.warning("DeepSeek returned empty content (prompt ~%d tokens)", estimated_prompt_tokens)
+    return content
