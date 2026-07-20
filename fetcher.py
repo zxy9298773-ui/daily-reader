@@ -517,10 +517,12 @@ def fetch_articles(skip_urls: set[str] | None = None) -> List[Dict]:
         except Exception:
             return True
 
+    MAX_ENTRIES_PER_FEED = 10  # per-source cap to keep fetching fast
+
     all_candidates: List[Dict] = []
     for bucket in feed_buckets:
         feed_candidates: list[tuple[str, Dict]] = []  # (url, article)
-        for entry in bucket["entries"]:
+        for entry in bucket["entries"][:MAX_ENTRIES_PER_FEED]:
             url = entry.get("link", "")
             if not url or url in skip_urls or url in used_urls:
                 continue
@@ -575,7 +577,7 @@ def fetch_articles(skip_urls: set[str] | None = None) -> List[Dict]:
         for bucket in feed_buckets:
             if len(articles) >= config.MAX_ARTICLES_TOTAL:
                 break
-            for entry in bucket["entries"]:
+            for entry in bucket["entries"][:MAX_ENTRIES_PER_FEED]:
                 if len(articles) >= config.MAX_ARTICLES_TOTAL:
                     break
 

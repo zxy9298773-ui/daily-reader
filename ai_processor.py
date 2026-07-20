@@ -26,7 +26,7 @@ DEFAULT_KWARGS = dict(
     max_tokens=16384,
 )
 
-_MAX_RETRIES = 2          # for translation
+_MAX_RETRIES = 1          # for translation
 _MAX_VOCAB_RETRIES = 3   # for vocabulary (stricter dedup)
 _RETRY_DELAY_S = 1.0
 
@@ -92,6 +92,15 @@ def _translate_paragraphs(paragraphs: List[str]) -> List[Dict[str, str]]:
     """
     if not paragraphs:
         return []
+
+    # ── Merge short adjacent paragraphs into real-sized paragraphs ─
+    merged = []
+    for p in paragraphs:
+        if merged and len(merged[-1]) + len(p) < 300:
+            merged[-1] = merged[-1] + " " + p
+        else:
+            merged.append(p)
+    paragraphs = merged
 
     numbered_input = "\n".join(
         f"[{i + 1}] {p}" for i, p in enumerate(paragraphs)
@@ -216,89 +225,157 @@ def _translate_paragraphs(paragraphs: List[str]) -> List[Dict[str, str]]:
 def _extract_vocabulary(paragraphs: List[str]) -> List[Dict[str, str]]:
     """Extract at least 2 vocabulary items per paragraph.
 
-    Iterates over each paragraph individually so every paragraph is
-    guaranteed to contribute at least 2 words.  Results are merged and
-    deduplicated by word text, capped at 40 items.
+    Two-layer strategy:
+      1. Bulk call — send all paragraphs with [Pn] markers, ask for 2 words
+         per paragraph.  Tracks which paragraphs are covered.
+      2. Per-paragraph fill — for any paragraph with < 2 words, make an
+         individual call to fill the gap.
     """
+    # ------------------------------------------------------------------
+    # Shared helpers
+    # ------------------------------------------------------------------
+    def _parse_line(line: str) -> Dict[str, str] | None:
+        """Parse a single pipe-delimited vocabulary line into a dict.
+
+        Returns None when the line cannot be parsed.
+        """
+        parts = line.split("|")
+        if len(parts) >= 8:
+            example_en = parts[6].strip()
+            example_cn = parts[7].strip()
+            colloc_en = parts[4].strip()
+            colloc_cn = parts[5].strip()
+            collocation = f"{colloc_en} {colloc_cn}" if colloc_en and colloc_cn else ""
+            return {
+                "word":          parts[0].strip(),
+                "phonetic":      parts[1].strip(),
+                "pos":           parts[2].strip(),
+                "meaning":       parts[3].strip(),
+                "collocation":   collocation,
+                "collocation_en": colloc_en,
+                "collocation_cn": colloc_cn,
+                "example_en":    example_en,
+                "example_cn":    example_cn,
+            }
+        if len(parts) >= 6:
+            return {
+                "word":          parts[0].strip(),
+                "phonetic":      parts[1].strip(),
+                "pos":           parts[2].strip(),
+                "meaning":       parts[3].strip(),
+                "collocation":   parts[4].strip(),
+                "collocation_en": parts[4].strip(),
+                "collocation_cn": "",
+                "example_en":    parts[5].strip(),
+                "example_cn":    "",
+            }
+        return None
+
+    def _dedup_append(vocab_list: list, item: dict) -> None:
+        """Append *item* to *vocab_list* if its word hasn't been seen."""
+        w = item["word"].lower()
+        if w not in seen_words:
+            seen_words.add(w)
+            vocab_list.append(item)
+
+    # ------------------------------------------------------------------
+    # Phase 1 — Bulk call with paragraph markers
+    # ------------------------------------------------------------------
     all_vocab: list[Dict[str, str]] = []
     seen_words: set[str] = set()
 
-    per_para_prompt = (
-        "从下面这段英文中提取 2 个最有价值的单词。\n"
-        "对每个单词，按以下格式输出，每行一个词，用 | 分隔：\n"
-        "单词 | 音标 | 词性(英文) | 中文释义 | 固定搭配(英文短语) | "
-        "固定搭配中文释义 | 英文例句 | 中文例句\n\n"
-        "严格规则（按优先级排序）：\n"
-        "1. 英文例句必须完整（10-25个单词），不能是短语。\n"
-        "2. 中文例句必须是英文例句的精确中文翻译，逐词对应。\n"
-        "3. 单词、固定搭配、例句优先从原文中选取；如果原文没有合适的，可以自创合理内容。\n"
-        "4. 每行必须有8列，顺序为：单词 | 音标 | 词性 | 中文释义 | 固定搭配英文 | 固定搭配中文 | 英文例句 | 中文例句\n\n"
-        "待处理段落：\n{para}"
-    )
-    per_para_system = (
-        "你是一个英语词汇老师。每段提取 2 个单词。"
-        "严格按照格式输出，每行一个单词，用 | 分隔字段。"
+    # Track how many words per paragraph (by 0‑based index)
+    para_count: dict[int, int] = {}
+
+    # Build annotated input only for paragraphs long enough to be useful
+    selected: list[tuple[int, str]] = []
+    for i, p in enumerate(paragraphs):
+        if len(p) >= 30:
+            selected.append((i, p))
+
+    if not selected:
+        return []
+
+    all_para_indices = [idx for idx, _ in selected]
+
+    bulk_input = "\n".join(f"[P{idx + 1}] {p}" for idx, p in selected)
+    bulk_system = (
+        "你是一个英语词汇老师。严格按格式输出，每行一个单词，行首必须标注段落编号。"
         "每行必须有8列。不要多余的文字。"
     )
+    bulk_prompt = (
+        "从下面每段英文中各提取 2 个最有价值的单词。\n"
+        "对每个单词，输出格式：\n"
+        "[Pn] 单词 | 音标 | 词性(英文) | 中文释义 | "
+        "固定搭配(英文短语) | 固定搭配中文释义 | 英文例句 | 中文例句\n\n"
+        "规则：\n"
+        "1. 每个段落 [Pn] 输出 2 行（每行 1 个单词），不要多也不要少。\n"
+        "2. 英文例句必须完整（10-25个单词），不能是短语。\n"
+        "3. 中文例句必须是英文例句的精确中文翻译。\n"
+        "4. 禁止两个单词共用同一个英文例句。\n"
+        "5. 优先使用原文句子；没有合适的可以自创。\n\n"
+        "待处理内容：\n" + bulk_input
+    )
 
-    for para in paragraphs:
-        if len(para) < 30:
-            continue  # skip very short paragraphs
-        prompt = per_para_prompt.format(para=para)
+    raw = _chat(bulk_prompt, bulk_system)
+    for line in raw.strip().split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        # Match [Pn] prefix
+        m = re.match(r'\[P(\d+)\]\s*(.*)', line)
+        if not m:
+            continue
+        para_idx = int(m.group(1)) - 1  # back to 0-based
+        content = m.group(2)
+        item = _parse_line(content)
+        if item:
+            _dedup_append(all_vocab, item)
+            para_count[para_idx] = para_count.get(para_idx, 0) + 1
+
+    # ------------------------------------------------------------------
+    # Phase 2 — Fill paragraphs with < 2 words
+    # ------------------------------------------------------------------
+    for idx in all_para_indices:
+        if para_count.get(idx, 0) >= 2:
+            continue
+
+        para_text = paragraphs[idx]
+        fill_prompt = (
+            "从下面这段英文中提取 2 个最有价值的单词。\n"
+            "对每个单词，按以下格式输出，每行一个词，用 | 分隔：\n"
+            "单词 | 音标 | 词性(英文) | 中文释义 | 固定搭配(英文短语) | "
+            "固定搭配中文释义 | 英文例句 | 中文例句\n\n"
+            "规则：\n"
+            "1. 英文例句必须完整（10-25个单词），不能是短语。\n"
+            "2. 中文例句必须是英文例句的精确中文翻译。\n"
+            "3. 优先使用原文句子；没有合适的可以自创。\n"
+            "4. 每行必须有8列。\n\n"
+            "待处理段落：\n" + para_text
+        )
+        fill_system = (
+            "你是一个英语词汇老师。每段提取 2 个单词。"
+            "严格按照格式输出，每行一个单词，用 | 分隔字段。"
+            "每行必须有8列。不要多余的文字。"
+        )
 
         for attempt in range(1 + _MAX_VOCAB_RETRIES):
-            raw = _chat(prompt, per_para_system)
-            lines = [line.strip() for line in raw.strip().split("\n") if line.strip()]
-            local_vocab: list[Dict[str, str]] = []
-
-            for line in lines:
-                parts = line.split("|")
-                if len(parts) >= 8:
-                    example_en = parts[6].strip()
-                    example_cn = parts[7].strip()
-                    colloc_en = parts[4].strip()
-                    colloc_cn = parts[5].strip()
-                    collocation = f"{colloc_en} {colloc_cn}" if colloc_en and colloc_cn else ""
-                    word = parts[0].strip()
-                    local_vocab.append({
-                        "word": word,
-                        "phonetic": parts[1].strip(),
-                        "pos": parts[2].strip(),
-                        "meaning": parts[3].strip(),
-                        "collocation": collocation,
-                        "collocation_en": colloc_en,
-                        "collocation_cn": colloc_cn,
-                        "example_en": example_en,
-                        "example_cn": example_cn,
-                    })
-                elif len(parts) >= 6:
-                    word = parts[0].strip()
-                    local_vocab.append({
-                        "word": word,
-                        "phonetic": parts[1].strip(),
-                        "pos": parts[2].strip(),
-                        "meaning": parts[3].strip(),
-                        "collocation": parts[4].strip(),
-                        "collocation_en": parts[4].strip(),
-                        "collocation_cn": "",
-                        "example_en": parts[5].strip(),
-                        "example_cn": "",
-                    })
-
-            if local_vocab:
-                for v in local_vocab:
-                    w = v["word"].lower()
-                    if w not in seen_words:
-                        seen_words.add(w)
-                        all_vocab.append(v)
-                break  # success for this paragraph
-
+            raw2 = _chat(fill_prompt, fill_system)
+            items = []
+            for line in raw2.strip().split("\n"):
+                line = line.strip()
+                if not line:
+                    continue
+                item = _parse_line(line)
+                if item:
+                    items.append(item)
+            if items:
+                for item in items:
+                    _dedup_append(all_vocab, item)
+                break
             logger.warning(
-                "Per-para vocab attempt %d/%d failed for paragraph "
-                "(len=%d), retrying…",
-                attempt + 1,
-                1 + _MAX_VOCAB_RETRIES,
-                len(para),
+                "Vocab fill attempt %d/%d failed for paragraph %d, retrying…",
+                attempt + 1, 1 + _MAX_VOCAB_RETRIES, idx,
             )
             if attempt < _MAX_VOCAB_RETRIES:
                 time.sleep(_RETRY_DELAY_S)
