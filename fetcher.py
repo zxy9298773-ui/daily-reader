@@ -237,6 +237,57 @@ def _is_roundup_article(title: str, cleaned_text: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+#  Video / audio entry detection
+# ---------------------------------------------------------------------------
+
+_VIDEO_KEYWORDS = [
+    "video", "watch", "listen", "podcast", "audio",
+    "livestream", "live stream", "live broadcast",
+]
+
+
+def _is_video_entry(entry) -> bool:
+    """Return True if the RSS entry points to video/audio content.
+
+    Checks, in order:
+      1. ``media:content`` tags (medium or MIME type)
+      2. URL path for /video/, /watch, /videos/, /play/
+      3. Title + summary for video/audio keywords
+    """
+    # 1. media:content tags (feedparser parses as entry.media_content)
+    media_content = entry.get("media_content", [])
+    if isinstance(media_content, list):
+        for media in media_content:
+            if not isinstance(media, dict):
+                continue
+            medium = media.get("medium", "")
+            mtype = media.get("type", "")
+            if medium in ("video", "audio"):
+                logger.debug("Video/audio detected via media:content medium='%s'", medium)
+                return True
+            if mtype.startswith("video/") or mtype.startswith("audio/"):
+                logger.debug("Video/audio detected via media:content type='%s'", mtype)
+                return True
+
+    # 2. URL path indicators
+    url = entry.get("link", "")
+    if re.search(r"/video(?:s|/|\b)|/watch\b|/videos/|/play/", url, re.I):
+        logger.debug("Video detected via URL path: %s", url[:60])
+        return True
+
+    # 3. Title / summary keywords
+    title = entry.get("title", "") or ""
+    summary = entry.get("summary", "") or entry.get("description", "") or ""
+    combined = f"{title} {summary}".lower()
+    for kw in _VIDEO_KEYWORDS:
+        if kw in combined:
+            logger.debug("Video/audio detected via keyword '%s' in title/summary", kw)
+            return True
+
+    return False
+
+
+# ---------------------------------------------------------------------------
 #  Multi-strategy text extraction
 # ---------------------------------------------------------------------------
 
@@ -342,6 +393,11 @@ def _extract_article(entry, source_name: str) -> Optional[Dict]:
     if not url:
         return None
 
+    # Skip video / audio entries — they have no extractable text
+    if _is_video_entry(entry):
+        logger.debug("Skipping video/audio entry: %s", url[:60])
+        return None
+
     # Capture RSS summary early — may be merged into extracted text
     rss_summary_raw = entry.get("summary", "") or entry.get("description", "")
 
@@ -409,13 +465,15 @@ def fetch_articles(skip_urls: set[str] | None = None) -> List[Dict]:
     """Return up to ``MAX_ARTICLES_TOTAL`` parsed-article dicts.
 
     Two-pass strategy:
-      1. **Diversity pass** — take at most **one** article from each
-         feed so the newsletter contains sources from different outlets.
+      1. **Diversity pass** — take at most **one** article from **every**
+         feed, then select the highest-quality ones (full articles
+         preferred over summaries; longer text preferred).
       2. **Fallback pass** — if not enough articles after pass 1, go
          back to feeds that already gave us an article and take more.
 
-    Respects the ``skip_urls`` set (previously pushed articles are
-    skipped entirely without attempting extraction).
+    Video and audio entries are skipped entirely.  Respects the
+    ``skip_urls`` set (previously pushed articles are skipped without
+    attempting extraction).
     """
     skip_urls = skip_urls or set()
     articles: List[Dict] = []
@@ -443,36 +501,37 @@ def fetch_articles(skip_urls: set[str] | None = None) -> List[Dict]:
         logger.warning("Could not parse any RSS feeds")
         return []
 
-    # ── Pass 1: diversity (≤1 per feed) ────────────────────────────
+    # ── Pass 1: diversity — collect ≤1 per feed from ALL feeds ────
+    # Collect candidates from every feed first, then select the best.
+    all_candidates: List[Dict] = []
     for bucket in feed_buckets:
-        if len(articles) >= config.MAX_ARTICLES_TOTAL:
-            break
-
-        taken_one = False
         for entry in bucket["entries"]:
-            if len(articles) >= config.MAX_ARTICLES_TOTAL:
-                break
-
             url = entry.get("link", "")
             if not url or url in skip_urls or url in used_urls:
                 continue
 
             article = _extract_article(entry, bucket["name"])
             if article:
-                articles.append(article)
+                all_candidates.append(article)
                 used_urls.add(url)
-                taken_one = True
                 logger.info(
-                    "  [diversity] article %d/%d: %s",
-                    len(articles), config.MAX_ARTICLES_TOTAL,
-                    article["title"],
+                    "  [diversity] candidate from %s: %s",
+                    bucket["name"], article["title"],
                 )
                 break  # max 1 per feed in pass 1
             else:
                 failed_urls.add(url)  # don't retry in pass 2
 
-        if not taken_one:
-            logger.debug("  No valid article from %s (pass 1)", bucket["name"])
+    # Sort by quality: full articles first, then by text length descending
+    all_candidates.sort(
+        key=lambda a: (0 if not a.get("is_summary") else 1, -len(a.get("text", ""))),
+    )
+    articles = all_candidates[:config.MAX_ARTICLES_TOTAL]
+    if all_candidates:
+        logger.info(
+            "  [diversity] collected %d candidate(s), selected top %d by quality",
+            len(all_candidates), len(articles),
+        )
 
     # ── Pass 2: fallback (fill remaining slots from any feed) ─────
     if len(articles) < config.MAX_ARTICLES_TOTAL:
