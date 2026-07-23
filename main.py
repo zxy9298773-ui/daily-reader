@@ -135,9 +135,9 @@ def main():
             logger.info("=" * 48)
             cleanup_old_emails()
             # Record sent URLs so they won't repeat tomorrow
-            mark_all_sent([a["url"] for a in articles])
+            mark_all_sent([a["url"] for a in processed])
             # Record source rotation so every source gets a turn
-            mark_sources_pushed([a["source"] for a in articles], today_str)
+            mark_sources_pushed([a["source"] for a in processed], today_str)
     else:
         logger.info("=" * 48)
         logger.info("  Step 4/4 — Dry-run (use --send to actually mail)")

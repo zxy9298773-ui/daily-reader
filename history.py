@@ -14,7 +14,7 @@ from typing import List, Set, Dict
 
 logger = logging.getLogger(__name__)
 
-_JSON_PATH = os.path.join(os.path.dirname(__file__), "..", "sent_articles.json")
+_JSON_PATH = os.path.join(os.path.dirname(__file__), "sent_articles.json")
 
 
 def _load() -> List[str]:
@@ -74,7 +74,7 @@ def mark_all_sent(urls: List[str]) -> None:
 #  Source rotation tracking  (ensures every source is served ≥1×/week)
 # ═══════════════════════════════════════════════════════════════════
 
-_ROTATION_PATH = os.path.join(os.path.dirname(__file__), "..", "source_rotation.json")
+_ROTATION_PATH = os.path.join(os.path.dirname(__file__), "source_rotation.json")
 
 
 def _load_rotation() -> Dict[str, str]:
