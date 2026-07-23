@@ -19,7 +19,12 @@ from ai_processor import process_article
 from email_builder import build_email, build_empty_email
 from sender import send_email, _print_to_console
 from cleanup import cleanup_old_emails
-from history import get_sent_urls, mark_all_sent, mark_sources_pushed
+from history import (
+    get_sent_normalized_urls,
+    mark_all_sent,
+    mark_sources_pushed,
+    normalize_url,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -46,7 +51,7 @@ def main():
     logger.info("=" * 48)
 
     # Load previously sent URLs so we don't repeat articles
-    sent_urls = get_sent_urls()
+    sent_urls = get_sent_normalized_urls()
     if sent_urls:
         logger.info("Found %d previously sent article(s) in history", len(sent_urls))
 
@@ -91,10 +96,10 @@ def main():
         sys.exit(0)
 
     # ── 2.5 二次过滤：发送前再检查一遍已发送记录 ────────────────
-    sent_urls = get_sent_urls()
+    sent_urls = get_sent_normalized_urls()
     if sent_urls:
         before = len(processed)
-        processed = [a for a in processed if a.get("url") not in sent_urls]
+        processed = [a for a in processed if normalize_url(a.get("url", "")) not in sent_urls]
         skipped = before - len(processed)
         if skipped:
             logger.info("Secondary filter removed %d already-sent article(s)", skipped)

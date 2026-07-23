@@ -9,7 +9,7 @@ from typing import List, Dict, Optional
 import logging
 
 import config
-from history import get_sent_urls, get_source_last_seen
+from history import get_sent_urls, get_source_last_seen, normalize_url
 
 logger = logging.getLogger(__name__)
 
@@ -524,7 +524,7 @@ def fetch_articles(skip_urls: set[str] | None = None) -> List[Dict]:
         feed_candidates: list[tuple[str, Dict]] = []  # (url, article)
         for entry in bucket["entries"][:MAX_ENTRIES_PER_FEED]:
             url = entry.get("link", "")
-            if not url or url in skip_urls or url in used_urls:
+            if not url or normalize_url(url) in skip_urls or url in used_urls:
                 continue
 
             article = _extract_article(entry, bucket["name"])
@@ -582,7 +582,7 @@ def fetch_articles(skip_urls: set[str] | None = None) -> List[Dict]:
                     break
 
                 url = entry.get("link", "")
-                if not url or url in skip_urls or url in used_urls or url in failed_urls:
+                if not url or normalize_url(url) in skip_urls or url in used_urls or url in failed_urls:
                     continue
 
                 article = _extract_article(entry, bucket["name"])
@@ -599,7 +599,7 @@ def fetch_articles(skip_urls: set[str] | None = None) -> List[Dict]:
     sent_urls = get_sent_urls()
     if sent_urls:
         before = len(articles)
-        articles = [a for a in articles if a["url"] not in sent_urls]
+        articles = [a for a in articles if normalize_url(a["url"]) not in {normalize_url(u) for u in sent_urls}]
         filtered = before - len(articles)
         if filtered:
             logger.info("Source filter removed %d already-sent article(s)", filtered)
@@ -613,7 +613,7 @@ def fetch_articles(skip_urls: set[str] | None = None) -> List[Dict]:
             for entry in bucket["entries"]:
                 url = entry.get("link", "")
                 title = entry.get("title", "")
-                if url and title and url not in skip_urls:
+                if url and title and normalize_url(url) not in skip_urls:
                     links.append({"title": title, "url": url})
 
         if links:
