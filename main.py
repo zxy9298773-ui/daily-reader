@@ -134,8 +134,9 @@ def main():
             logger.info("  Cleanup — deleting emails ≥%d days old", config.CLEANUP_AFTER_DAYS)
             logger.info("=" * 48)
             cleanup_old_emails()
-            # Record sent URLs so they won't repeat tomorrow
-            mark_all_sent([a["url"] for a in processed])
+            # Record sent articles so they won't repeat tomorrow
+            # (dedup uses both URL and title; title hash catches URL changes)
+            mark_all_sent(processed)
             # Record source rotation so every source gets a turn
             mark_sources_pushed([a["source"] for a in processed], today_str)
     else:
