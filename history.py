@@ -109,24 +109,20 @@ def _load_entries() -> List[Dict]:
 
 
 def _save_entries(entries: List[Dict]) -> None:
-    """Atomic write: write to .tmp, then rename.
+    """Write directly + fsync.
 
-    Prevents partial/corrupted writes if the process crashes mid-write.
+    ``os.replace(tmp → target)`` can fail on Windows (permissions,
+    antivirus locks, etc.) and was silently losing history —
+    direct write + fsync is simpler and more reliable here.
     """
-    tmp_path = _JSON_PATH + ".tmp"
     try:
-        with open(tmp_path, "w", encoding="utf-8") as f:
+        with open(_JSON_PATH, "w", encoding="utf-8") as f:
             json.dump(entries, f, ensure_ascii=False, indent=2)
-        os.replace(tmp_path, _JSON_PATH)  # atomic on POSIX; near-atomic on Windows
+            f.flush()
+            os.fsync(f.fileno())
         logger.debug("Saved %d entry(ies) to sent_articles.json", len(entries))
     except OSError:
         logger.exception("Failed to write sent_articles.json")
-        # Clean up temp file on failure
-        try:
-            if os.path.exists(tmp_path):
-                os.remove(tmp_path)
-        except OSError:
-            pass
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -232,20 +228,15 @@ def _load_rotation() -> Dict[str, str]:
 
 
 def _save_rotation(data: Dict[str, str]) -> None:
-    """Atomic write of rotation data."""
-    tmp_path = _ROTATION_PATH + ".tmp"
+    """Direct write + fsync (same reliability fix as _save_entries)."""
     try:
-        with open(tmp_path, "w", encoding="utf-8") as f:
+        with open(_ROTATION_PATH, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
-        os.replace(tmp_path, _ROTATION_PATH)
+            f.flush()
+            os.fsync(f.fileno())
         logger.debug("Saved rotation data (%d source(s))", len(data))
     except OSError:
         logger.exception("Failed to write source_rotation.json")
-        try:
-            if os.path.exists(tmp_path):
-                os.remove(tmp_path)
-        except OSError:
-            pass
 
 
 def get_source_last_seen() -> Dict[str, str]:
