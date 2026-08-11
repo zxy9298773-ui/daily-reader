@@ -69,19 +69,11 @@ def process_article(article: Dict) -> Dict:
     ``{"original": …, "translation": …}``) and ``vocabulary`` (list of
     word dicts).
 
-    When the article is a summary-only (``is_summary``), AI translation
-    and vocabulary extraction are skipped — the summary text is passed
-    through as-is.
+    Summary-only articles (``is_summary``) go through the same unified
+    pipeline — they must also carry a Chinese translation for every
+    paragraph (user requirement: every pushed article is translated).
     """
     text = article["text"]
-
-    # ── Summary-only: skip AI work ──────────────────────────────────
-    if article.get("is_summary"):
-        return {
-            **article,
-            "paragraphs": [{"original": text, "translation": ""}],
-            "vocabulary": [],
-        }
 
     # Split by double newline (real paragraph boundaries) and filter
     # out empty / tiny fragments
@@ -273,12 +265,12 @@ def _translate_paragraphs(paragraphs: List[str]) -> List[Dict[str, str]]:
 # ---------------------------------------------------------------------------
 
 def _extract_vocabulary(paragraphs: List[str]) -> List[Dict[str, str]]:
-    """Extract at least 2 vocabulary items per paragraph.
+    """Extract at least 3 vocabulary items per paragraph.
 
     Two-layer strategy:
-      1. Bulk call — send all paragraphs with [Pn] markers, ask for 2 words
+      1. Bulk call — send all paragraphs with [Pn] markers, ask for 3 words
          per paragraph.  Tracks which paragraphs are covered.
-      2. Per-paragraph fill — for any paragraph with < 2 words, make an
+      2. Per-paragraph fill — for any paragraph with < 3 words, make an
          individual call to fill the gap.
     """
     # ------------------------------------------------------------------
@@ -321,12 +313,19 @@ def _extract_vocabulary(paragraphs: List[str]) -> List[Dict[str, str]]:
             }
         return None
 
-    def _dedup_append(vocab_list: list, item: dict) -> None:
-        """Append *item* to *vocab_list* if its word hasn't been seen."""
+    def _dedup_append(vocab_list: list, item: dict) -> bool:
+        """Append *item* to *vocab_list* if its word hasn't been seen.
+
+        Returns ``True`` when the item was actually appended, so callers
+        can count *real* per-paragraph coverage — duplicate words that
+        were rejected must not inflate the count.
+        """
         w = item["word"].lower()
         if w not in seen_words:
             seen_words.add(w)
             vocab_list.append(item)
+            return True
+        return False
 
     # ------------------------------------------------------------------
     # Phase 1 — Bulk call with paragraph markers
@@ -367,12 +366,12 @@ def _extract_vocabulary(paragraphs: List[str]) -> List[Dict[str, str]]:
         "每行必须有8列。不要多余的文字。"
     )
     bulk_prompt = (
-        "从下面每段英文中各提取 2 个最有价值的单词。\n"
+        "从下面每段英文中各提取 3 个最有价值的单词。\n"
         "对每个单词，输出格式：\n"
         "[Pn] 单词 | 音标 | 词性(英文) | 中文释义 | "
         "固定搭配(英文短语) | 固定搭配中文释义 | 英文例句 | 中文例句\n\n"
         "规则：\n"
-        "1. 每个段落 [Pn] 输出 2 行（每行 1 个单词），不要多也不要少。\n"
+        "1. 每个段落 [Pn] 输出 3 行（每行 1 个单词），不要多也不要少。\n"
         "2. 英文例句必须完整（10-25个单词），不能是短语。\n"
         "3. 中文例句必须是英文例句的精确中文翻译。\n"
         "4. 禁止两个单词共用同一个英文例句。\n"
@@ -393,19 +392,21 @@ def _extract_vocabulary(paragraphs: List[str]) -> List[Dict[str, str]]:
         content = m.group(2)
         item = _parse_line(content)
         if item:
-            _dedup_append(all_vocab, item)
-            para_count[para_idx] = para_count.get(para_idx, 0) + 1
+            # Only count words that were actually appended — a response
+            # full of duplicate words must not inflate para_count.
+            if _dedup_append(all_vocab, item):
+                para_count[para_idx] = para_count.get(para_idx, 0) + 1
 
     # ------------------------------------------------------------------
-    # Phase 2 — Fill paragraphs with < 2 words
+    # Phase 2 — Fill paragraphs with < 3 words
     # ------------------------------------------------------------------
     for idx in all_para_indices:
-        if para_count.get(idx, 0) >= 2:
+        if para_count.get(idx, 0) >= 3:
             continue
 
         para_text = paragraphs[idx]
         fill_prompt = (
-            "从下面这段英文中提取 2 个最有价值的单词。\n"
+            "从下面这段英文中提取 3 个最有价值的单词。\n"
             "对每个单词，按以下格式输出，每行一个词，用 | 分隔：\n"
             "单词 | 音标 | 词性(英文) | 中文释义 | 固定搭配(英文短语) | "
             "固定搭配中文释义 | 英文例句 | 中文例句\n\n"
@@ -417,7 +418,7 @@ def _extract_vocabulary(paragraphs: List[str]) -> List[Dict[str, str]]:
             "待处理段落：\n" + para_text
         )
         fill_system = (
-            "你是一个英语词汇老师。每段提取 2 个单词。"
+            "你是一个英语词汇老师。每段提取 3 个单词。"
             "严格按照格式输出，每行一个单词，用 | 分隔字段。"
             "每行必须有8列。不要多余的文字。"
         )
@@ -433,9 +434,15 @@ def _extract_vocabulary(paragraphs: List[str]) -> List[Dict[str, str]]:
                 if item:
                     items.append(item)
             if items:
+                added = 0
                 for item in items:
-                    _dedup_append(all_vocab, item)
-                break
+                    if _dedup_append(all_vocab, item):
+                        added += 1
+                if added:
+                    # Only count words that were actually appended — if the
+                    # whole response was duplicates, retry for fresh words.
+                    para_count[idx] = para_count.get(idx, 0) + added
+                    break
             logger.warning(
                 "Vocab fill attempt %d/%d failed for paragraph %d, retrying…",
                 attempt + 1, 1 + _MAX_VOCAB_RETRIES, idx,

@@ -205,7 +205,22 @@ def _article_section(article: Dict) -> str:
 
     if is_summary:
         # ── Summary-only: full-width layout + "Read full article" button ──
-        summary_text = _esc(paragraphs[0]["original"]) if paragraphs else ""
+        # ai_processor now translates summary articles too, so every
+        # pushed article shows its Chinese translation and vocabulary.
+        paragraphs_html = ""
+        for p in paragraphs:
+            orig = _esc(p.get("original", ""))
+            trans = _esc(p.get("translation", ""))
+            if not trans:
+                trans = "[翻译生成失败]"
+            paragraphs_html += (
+                f'<p style="margin:0 0 16px;font-size:15px;line-height:1.7;'
+                f'color:{TEXT_BODY};font-family:{FONT_EN};">{orig}</p>'
+                f'<p style="margin:-12px 0 20px;font-size:14px;line-height:1.6;'
+                f'color:#999;font-family:{FONT_CN};">{trans}</p>'
+            )
+
+        vocab_html = _vocab_cards_html(vocabulary)
 
         return f"""
     <!-- ── article (summary): {title} ── -->
@@ -216,8 +231,8 @@ def _article_section(article: Dict) -> str:
       <p style="margin:6px 0 0;font-size:12px;color:{TEXT_META};">{source}{" · " + author if author else ""}</p>
     </td></tr>
 
-    <tr><td style="padding:20px 40px 32px;">
-      <p style="margin:0;font-size:15px;line-height:1.7;color:{TEXT_BODY};font-family:{FONT_EN};">{summary_text}</p>
+    <tr><td style="padding:20px 40px 12px;">
+      {paragraphs_html}
     </td></tr>
 
     <tr><td style="padding:0 40px 32px;">
@@ -231,6 +246,14 @@ def _article_section(article: Dict) -> str:
           </td>
         </tr>
       </table>
+    </td></tr>
+
+    <tr><td style="padding:0 40px 32px;">
+      <div style="font-size:12px;font-weight:600;color:{TEXT_MUTED};text-transform:uppercase;letter-spacing:.5px;margin-bottom:12px;">Vocabulary</div>
+      <table width="100%" cellpadding="0" cellspacing="0"><tr>
+        <td width="50%" valign="top" style="padding-right:10px;">{_vocab_cards_html(vocabulary[: (len(vocabulary) + 1) // 2])}</td>
+        <td width="50%" valign="top">{_vocab_cards_html(vocabulary[(len(vocabulary) + 1) // 2:])}</td>
+      </tr></table>
     </td></tr>
 
     <tr><td style="padding:0 40px;">
@@ -256,6 +279,48 @@ def _article_section(article: Dict) -> str:
             <p style="margin:-12px 0 20px;font-size:14px;line-height:1.6;color:#999;font-family:{FONT_CN};">{trans}</p>"""
 
     # ── right column: vocabulary cards ─────────────────────────────
+    vocab_html = _vocab_cards_html(vocabulary)
+
+    return f"""
+    <!-- ── article: {title} ── -->
+    <tr><td style="padding:32px 40px 4px;">
+      <h2 style="margin:0;font-size:20px;font-weight:700;color:{TEXT_PRIMARY};line-height:1.3;font-family:Georgia,'Times New Roman',Times,serif;">
+        <a href="{url}" style="color:{TEXT_PRIMARY};text-decoration:none;">{title}</a>
+      </h2>
+      <p style="margin:6px 0 0;font-size:12px;color:{TEXT_META};">{source}{" · " + author if author else ""}</p>
+    </td></tr>
+
+    <tr><td style="padding:16px 40px 32px;">
+      <table width="100%" cellpadding="0" cellspacing="0"><tr>
+        <!-- left 70% -->
+        <td width="70%" valign="top" style="padding-right:24px;font-size:14px;line-height:1.5;">
+          {paragraphs_html}
+        </td>
+        <!-- right 30% -->
+        <td width="30%" valign="top">
+          <div style="font-size:12px;font-weight:600;color:{TEXT_MUTED};text-transform:uppercase;letter-spacing:.5px;margin-bottom:12px;">Vocabulary</div>
+          {vocab_html}
+        </td>
+      </tr></table>
+    </td></tr>
+
+    <tr><td style="padding:0 40px;">
+      <table width="100%" cellpadding="0" cellspacing="0"><tr>
+        <td style="height:1px;background:{BORDER_LIGHT};font-size:0;line-height:0;">&nbsp;</td>
+      </tr></table>
+    </td></tr>"""
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  helpers
+# ═══════════════════════════════════════════════════════════════════
+
+def _vocab_cards_html(vocabulary: List[Dict]) -> str:
+    """Render vocabulary cards HTML (used by full & summary layouts).
+
+    The number of cards is fully determined by ``ai_processor`` — this
+    function only renders whatever list it is given (max 40 words).
+    """
     vocab_html = ""
     for v in vocabulary[:40]:
         word = _esc(v.get("word", ""))
@@ -294,40 +359,8 @@ def _article_section(article: Dict) -> str:
 
     if not vocab_html:
         vocab_html = '<div style="font-size:13px;color:#999;">No vocabulary extracted.</div>'
+    return vocab_html
 
-    return f"""
-    <!-- ── article: {title} ── -->
-    <tr><td style="padding:32px 40px 4px;">
-      <h2 style="margin:0;font-size:20px;font-weight:700;color:{TEXT_PRIMARY};line-height:1.3;font-family:Georgia,'Times New Roman',Times,serif;">
-        <a href="{url}" style="color:{TEXT_PRIMARY};text-decoration:none;">{title}</a>
-      </h2>
-      <p style="margin:6px 0 0;font-size:12px;color:{TEXT_META};">{source}{" · " + author if author else ""}</p>
-    </td></tr>
-
-    <tr><td style="padding:16px 40px 32px;">
-      <table width="100%" cellpadding="0" cellspacing="0"><tr>
-        <!-- left 70% -->
-        <td width="70%" valign="top" style="padding-right:24px;font-size:14px;line-height:1.5;">
-          {paragraphs_html}
-        </td>
-        <!-- right 30% -->
-        <td width="30%" valign="top">
-          <div style="font-size:12px;font-weight:600;color:{TEXT_MUTED};text-transform:uppercase;letter-spacing:.5px;margin-bottom:12px;">Vocabulary</div>
-          {vocab_html}
-        </td>
-      </tr></table>
-    </td></tr>
-
-    <tr><td style="padding:0 40px;">
-      <table width="100%" cellpadding="0" cellspacing="0"><tr>
-        <td style="height:1px;background:{BORDER_LIGHT};font-size:0;line-height:0;">&nbsp;</td>
-      </tr></table>
-    </td></tr>"""
-
-
-# ═══════════════════════════════════════════════════════════════════
-#  helpers
-# ═══════════════════════════════════════════════════════════════════
 
 def _esc(text: str) -> str:
     """HTML-escape *text*."""

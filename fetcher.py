@@ -9,9 +9,78 @@ from typing import List, Dict, Optional
 import logging
 
 import config
-from history import get_sent_urls, get_source_last_seen, normalize_url
+from history import get_source_last_seen, normalize_url, is_duplicate
 
 logger = logging.getLogger(__name__)
+
+
+def _title_key(title: str) -> str:
+    """Normalized title key — must match ``history._title_key()``.
+
+    Used for intra-run duplicate detection: the same article syndicated
+    to several feeds (different URLs, identical title) is pushed once.
+    """
+    return title.strip().lower()[:100] if title else ""
+
+
+def _rotation_priority(source_name: str, source_last_seen: Dict[str, str],
+                       today: date) -> int:
+    """Days since *source_name* was last pushed (huge = never / unknown).
+
+    Fair-rotation metric: the larger the value, the longer the source has
+    waited, and the higher its selection priority should be.
+    """
+    last_str = source_last_seen.get(source_name, "")
+    if not last_str:
+        return 10 ** 9  # never pushed → most overdue
+    try:
+        return (today - date.fromisoformat(last_str)).days
+    except Exception:
+        return 10 ** 9
+
+
+def _candidate_sort_key(candidate: Dict, source_last_seen: Dict[str, str],
+                        today: date):
+    """Rotation-fairness first, then quality.
+
+    Order:
+      1. overdue sources (≥ config.ROTATION_DAYS since last push) first
+      2. among all sources, oldest last-push date first (fair rotation)
+      3. full articles before summaries, longer text preferred
+    """
+    priority = _rotation_priority(candidate.get("source", ""), source_last_seen, today)
+    return (
+        0 if priority >= config.ROTATION_DAYS else 1,
+        -priority,
+        0 if not candidate.get("is_summary") else 1,
+        -len(candidate.get("text", "")),
+    )
+
+
+def _select_articles(candidates: List[Dict], source_last_seen: Dict[str, str],
+                     today: date, max_total: int,
+                     seen_title_keys: set[str]) -> List[Dict]:
+    """Pick up to *max_total* candidates by rotation fairness + quality.
+
+    Enforces intra-run title uniqueness: a headline syndicated to several
+    feeds (different URLs) is selected only once per run.
+    """
+    candidates.sort(key=lambda c: _candidate_sort_key(c, source_last_seen, today))
+    selected: List[Dict] = []
+    for cand in candidates:
+        tk = _title_key(cand.get("title", ""))
+        if tk and tk in seen_title_keys:
+            logger.debug(
+                "Skipping intra-run duplicate title: %s",
+                cand.get("title", "")[:60],
+            )
+            continue
+        if tk:
+            seen_title_keys.add(tk)
+        selected.append(cand)
+        if len(selected) >= max_total:
+            break
+    return selected
 
 
 # ---------------------------------------------------------------------------
@@ -480,6 +549,7 @@ def fetch_articles(skip_urls: set[str] | None = None) -> List[Dict]:
     articles: List[Dict] = []
     used_urls: set[str] = set()   # tracks URLs taken in pass 1 / skip
     failed_urls: set[str] = set()  # tracks URLs that failed extraction
+    seen_title_keys: set[str] = set()  # titles already chosen this run
 
     # Parse all feeds up front so we only fetch each RSS URL once
     feed_buckets: list[dict] = []  # {"name": str, "url": str, "entries": [...]}
@@ -509,13 +579,8 @@ def fetch_articles(skip_urls: set[str] | None = None) -> List[Dict]:
     source_last_seen = get_source_last_seen()
 
     def _is_source_due(source_name: str) -> bool:
-        last_str = source_last_seen.get(source_name, "")
-        if not last_str:
-            return True  # never pushed → due
-        try:
-            return (today - date.fromisoformat(last_str)).days >= 7
-        except Exception:
-            return True
+        """Return True when *source_name* must be picked today."""
+        return _rotation_priority(source_name, source_last_seen, today) >= config.ROTATION_DAYS
 
     MAX_ENTRIES_PER_FEED = 10  # per-source cap to keep fetching fast
 
@@ -524,7 +589,12 @@ def fetch_articles(skip_urls: set[str] | None = None) -> List[Dict]:
         feed_candidates: list[tuple[str, Dict]] = []  # (url, article)
         for entry in bucket["entries"][:MAX_ENTRIES_PER_FEED]:
             url = entry.get("link", "")
-            if not url or normalize_url(url) in skip_urls or url in used_urls:
+            if not url or url in used_urls:
+                continue
+            # Never re-push an article sent before: URL *or* title hitting
+            # history means skip (title catches articles whose URL changed).
+            entry_title = entry.get("title", "")
+            if normalize_url(url) in skip_urls or is_duplicate(url, entry_title):
                 continue
 
             article = _extract_article(entry, bucket["name"])
@@ -553,12 +623,13 @@ def fetch_articles(skip_urls: set[str] | None = None) -> List[Dict]:
             )
 
     # ── Sort: rotation fairness → quality ─────────────────────────
-    all_candidates.sort(
-        key=lambda a: (0 if not _is_source_due(a.get("source", "")) else 1,
-                       0 if not a.get("is_summary") else 1,
-                       -len(a.get("text", ""))),
+    # _select_articles sorts all_candidates so that sources overdue by
+    # ≥ ROTATION_DAYS come first, then oldest last-push date first, and
+    # enforces intra-run title uniqueness.
+    articles = _select_articles(
+        all_candidates, source_last_seen, today,
+        config.MAX_ARTICLES_TOTAL, seen_title_keys,
     )
-    articles = all_candidates[:config.MAX_ARTICLES_TOTAL]
     if all_candidates:
         logger.info(
             "  [diversity] collected %d candidate(s), selected top %d by rotation+quality",
@@ -582,27 +653,36 @@ def fetch_articles(skip_urls: set[str] | None = None) -> List[Dict]:
                     break
 
                 url = entry.get("link", "")
-                if not url or normalize_url(url) in skip_urls or url in used_urls or url in failed_urls:
+                if not url or url in used_urls or url in failed_urls:
+                    continue
+                entry_title = entry.get("title", "")
+                tk = _title_key(entry_title)
+                if normalize_url(url) in skip_urls or is_duplicate(url, entry_title):
+                    continue
+                if tk and tk in seen_title_keys:
                     continue
 
                 article = _extract_article(entry, bucket["name"])
                 if article:
                     articles.append(article)
                     used_urls.add(url)
+                    if tk:
+                        seen_title_keys.add(tk)
                     logger.info(
                         "  [fallback] article %d/%d: %s",
                         len(articles), config.MAX_ARTICLES_TOTAL,
                         article["title"],
                     )
 
-    # ── Pass 3: 源端过滤已发送文章 ────────────────────────────────
-    sent_urls = get_sent_urls()
-    if sent_urls:
-        before = len(articles)
-        articles = [a for a in articles if normalize_url(a["url"]) not in {normalize_url(u) for u in sent_urls}]
-        filtered = before - len(articles)
-        if filtered:
-            logger.info("Source filter removed %d already-sent article(s)", filtered)
+    # ── Pass 3: 源端过滤已发送文章（URL+标题双键，最终兜底） ──────
+    before = len(articles)
+    articles = [
+        a for a in articles
+        if not is_duplicate(a.get("url", ""), a.get("title", ""))
+    ]
+    filtered = before - len(articles)
+    if filtered:
+        logger.info("Source filter removed %d already-sent article(s)", filtered)
 
     if not articles:
         logger.warning("No articles could be extracted from any feed")
@@ -613,7 +693,7 @@ def fetch_articles(skip_urls: set[str] | None = None) -> List[Dict]:
             for entry in bucket["entries"]:
                 url = entry.get("link", "")
                 title = entry.get("title", "")
-                if url and title and normalize_url(url) not in skip_urls:
+                if url and title and normalize_url(url) not in skip_urls and not is_duplicate(url, title):
                     links.append({"title": title, "url": url})
 
         if links:

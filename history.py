@@ -3,7 +3,8 @@ History — JSON-backed tracking of already-sent article URLs and source
 rotation fairness.
 
 Ensures the same article is never pushed twice across days, and that
-every source gets pushed at least once per week.
+every source gets pushed at least once every ``config.ROTATION_DAYS``
+days (10 by default).
 The JSON file is committed to the repo so it persists across
 GitHub Actions runs.
 
@@ -212,7 +213,7 @@ def mark_sent(url: str) -> None:
 
 
 # ═══════════════════════════════════════════════════════════════════
-#  Source rotation tracking  (ensures every source is served ≥1×/week)
+#  Source rotation tracking  (ensures every source is served ≥1×/10 days)
 # ═══════════════════════════════════════════════════════════════════
 
 def _load_rotation() -> Dict[str, str]:

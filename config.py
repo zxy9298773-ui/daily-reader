@@ -55,4 +55,5 @@ CLEANUP_SEARCH_SUBJECT: str = "Daily Reader"   # only delete matching emails
 # Behaviour tweaks
 # ---------------------------------------------------------------------------
 MAX_ARTICLES_PER_FEED: int = 1   # articles per source (iterates until one succeeds)
-MAX_ARTICLES_TOTAL: int = 2      # cap on total articles per run
+MAX_ARTICLES_TOTAL: int = 3      # cap on total articles per run
+ROTATION_DAYS: int = 10          # each source must be picked at least once every N days

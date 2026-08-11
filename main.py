@@ -21,9 +21,9 @@ from sender import send_email, _print_to_console
 from cleanup import cleanup_old_emails
 from history import (
     get_sent_normalized_urls,
+    is_duplicate,
     mark_all_sent,
     mark_sources_pushed,
-    normalize_url,
 )
 
 logging.basicConfig(
@@ -96,13 +96,15 @@ def main():
         sys.exit(0)
 
     # ── 2.5 二次过滤：发送前再检查一遍已发送记录 ────────────────
-    sent_urls = get_sent_normalized_urls()
-    if sent_urls:
-        before = len(processed)
-        processed = [a for a in processed if normalize_url(a.get("url", "")) not in sent_urls]
-        skipped = before - len(processed)
-        if skipped:
-            logger.info("Secondary filter removed %d already-sent article(s)", skipped)
+    # 使用 URL+标题双键去重：同一文章即使换了 URL（标题不变）也会被拦截。
+    before = len(processed)
+    processed = [
+        a for a in processed
+        if not is_duplicate(a.get("url", ""), a.get("title", ""))
+    ]
+    skipped = before - len(processed)
+    if skipped:
+        logger.info("Secondary filter removed %d already-sent article(s)", skipped)
 
     if not processed:
         logger.warning("All articles already sent before – sending placeholder email.")
